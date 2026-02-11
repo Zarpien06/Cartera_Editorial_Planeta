@@ -1,0 +1,28 @@
+# Configuración básica para el directorio raíz del proyecto
+
+Options +FollowSymLinks
+RewriteEngine On
+
+# Configuración básica
+DirectoryIndex index.php index.html
+
+# Permitir acceso a archivos PHP
+<FilesMatch "\.php$">
+    Require all granted
+</FilesMatch>
+
+# Permitir descarga de archivos Excel
+<FilesMatch "\.(xlsx|xls|csv)$">
+    Require all granted
+</FilesMatch>
+
+# Deshabilitar listado de directorios
+Options -Indexes
+
+# Redirigir la raíz al frontend
+RewriteCond %{REQUEST_URI} ^/$
+RewriteRule ^(.*)$ front_php/ [L]
+
+# Manejo de errores personalizados
+ErrorDocument 404 /front_php/404.html
+ErrorDocument 500 /front_php/500.html

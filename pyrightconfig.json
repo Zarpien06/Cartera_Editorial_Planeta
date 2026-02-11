@@ -1,0 +1,25 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.13",
+  "pythonPlatform": "Windows",
+  "executionEnvironments": [
+    {
+      "root": "Python_principales",
+      "pythonVersion": "3.13",
+      "pythonPlatform": "Windows"
+    },
+    {
+      "root": "backend_php",
+      "pythonVersion": "3.13",
+      "pythonPlatform": "Windows"
+    }
+  ],
+  "typeCheckingMode": "basic",
+  "reportMissingImports": true,
+  "reportMissingTypeStubs": false,
+  "reportAttributeAccessIssue": false,
+  "reportOptionalMemberAccess": false,
+  "reportCallIssue": false
+}
+

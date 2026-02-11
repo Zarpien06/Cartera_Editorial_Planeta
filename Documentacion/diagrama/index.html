@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diagrama de Flujo - Sistema de Procesamiento de Cartera v3.0.0</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+            margin-bottom: 10px;
+            font-size: 32px;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #7f8c8d;
+            margin-bottom: 30px;
+            font-size: 18px;
+        }
+
+        .btn-container {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+        
+        .btn {
+            padding: 15px 30px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        .btn-print {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+        }
+        
+        .flow-container {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            margin: 40px 0;
+            overflow-x: auto;
+            padding: 30px 10px;
+        }
+        
+        .flow-column {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            min-width: 220px;
+        }
+        
+        .column-header {
+            text-align: center;
+            font-weight: bold;
+            color: #2c3e50;
+            font-size: 16px;
+            margin-bottom: 10px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .flow-box {
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            text-align: center;
+            transition: all 0.3s;
+            min-height: 120px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+        
+        .flow-box:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.2);
+        }
+        
+        .icon {
+            font-size: 36px;
+            margin-bottom: 10px;
+        }
+        
+        .box-title {
+            font-weight: bold;
+            font-size: 15px;
+            margin-bottom: 8px;
+            color: #2c3e50;
+        }
+        
+        .box-text {
+            font-size: 13px;
+            color: #555;
+            line-height: 1.5;
+        }
+        
+        .box-list {
+            list-style: none;
+            padding: 0;
+            margin-top: 8px;
+        }
+        
+        .box-list li {
+            margin: 4px 0;
+            font-size: 12px;
+        }
+        
+        .arrow-separator {
+            font-size: 36px;
+            color: #667eea;
+            font-weight: bold;
+            flex-shrink: 0;
+        }
+        
+        /* Colores por tipo */
+        .color-user { background: linear-gradient(135deg, #e3f2fd, #bbdefb); }
+        .color-web { background: linear-gradient(135deg, #fff9c4, #fff59d); }
+        .color-process { background: linear-gradient(135deg, #ffe0b2, #ffcc80); }
+        .color-validator { background: linear-gradient(135deg, #f3e5f5, #e1bee7); }
+        .color-python { background: linear-gradient(135deg, #c8e6c9, #a5d6a7); border: 3px solid #4caf50; }
+        .color-output { background: linear-gradient(135deg, #f8bbd0, #f48fb1); }
+        .color-storage { background: linear-gradient(135deg, #d1c4e9, #b39ddb); }
+        .color-log { background: linear-gradient(135deg, #ffccbc, #ffab91); }
+        
+        .logs-section {
+            margin-top: 50px;
+            padding-top: 30px;
+            border-top: 3px dashed #667eea;
+        }
+        
+        .logs-title {
+            text-align: center;
+            font-size: 24px;
+            color: #2c3e50;
+            margin-bottom: 20px;
+            font-weight: bold;
+        }
+        
+        .logs-boxes {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        
+        .legend {
+            margin-top: 40px;
+            padding: 25px;
+            background: #f8f9fa;
+            border-radius: 15px;
+            border-left: 5px solid #667eea;
+        }
+        
+        .legend h3 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            font-size: 20px;
+        }
+        
+        .legend-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 15px;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .legend-color {
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            flex-shrink: 0;
+        }
+        
+        @media print {
+            body {
+                background: white;
+                padding: 0;
+            }
+            .btn-container {
+                display: none;
+            }
+            .container {
+                box-shadow: none;
+            }
+        }
+
+        @media (max-width: 1200px) {
+            .flow-container {
+                justify-content: flex-start;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏢 Sistema de Procesamiento de Cartera v3.0.0</h1>
+        <p class="subtitle">Grupo Planeta - Arquitectura y Flujo de Procesamiento</p>
+
+        <div class="btn-container">
+            <button class="btn btn-print" onclick="window.print()">🖨️ Imprimir / Guardar como PDF</button>
+        </div>
+        
+        <!-- Diagrama de Flujo Principal -->
+        <div class="flow-container">
+            <!-- Columna 1: Usuario -->
+            <div class="flow-column">
+                <div class="column-header">1. Usuario</div>
+                <div class="flow-box color-user">
+                    <div class="icon">👤</div>
+                    <div class="box-title">Usuario</div>
+                    <div class="box-text">Accede al sistema vía navegador web</div>
+                </div>
+            </div>
+            
+            <div class="arrow-separator">→</div>
+            
+            <!-- Columna 2: Interfaz Web -->
+            <div class="flow-column">
+                <div class="column-header">2. Interfaz Web</div>
+                <div class="flow-box color-web">
+                    <div class="icon">🌐</div>
+                    <div class="box-title">index.php</div>
+                    <div class="box-text">Interfaz web principal<br>Formularios de carga</div>
+                </div>
+            </div>
+            
+            <div class="arrow-separator">→</div>
+            
+            <!-- Columna 3: Selección de Proceso -->
+            <div class="flow-column">
+                <div class="column-header">3. Tipos de Proceso</div>
+                <div class="flow-box color-process">
+                    <div class="icon">📊</div>
+                    <div class="box-title">Cartera</div>
+                    <div class="box-text">CSV + Fecha cierre</div>
+                </div>
+                <div class="flow-box color-process">
+                    <div class="icon">💰</div>
+                    <div class="box-title">Anticipos</div>
+                    <div class="box-text">Archivo CSV</div>
+                </div>
+                <div class="flow-box color-process">
+                    <div class="icon">📈</div>
+                    <div class="box-title">Modelo Deuda</div>
+                    <div class="box-text">Cartera + Anticipos + TRM</div>
+                </div>
+                <div class="flow-box color-process">
+                    <div class="icon">📋</div>
+                    <div class="box-title">FOCUS</div>
+                    <div class="box-text">5 archivos Excel/CSV</div>
+                </div>
+            </div>
+            
+            <div class="arrow-separator">→</div>
+            
+            <!-- Columna 4: Validador PHP -->
+            <div class="flow-column">
+                <div class="column-header">4. Validación</div>
+                <div class="flow-box color-validator">
+                    <div class="icon">⚙️</div>
+                    <div class="box-title">procesar.php</div>
+                    <div class="box-text">
+                        • Valida archivos<br>
+                        • Mueve a directorio<br>
+                        • Ejecuta Python
+                    </div>
+                </div>
+            </div>
+            
+            <div class="arrow-separator">→</div>
+            
+            <!-- Columna 5: Procesadores Python (DESTACADO) -->
+            <div class="flow-column">
+                <div class="column-header">5. Generadores Python ⭐</div>
+                <div class="flow-box color-python">
+                    <div class="icon">🐍</div>
+                    <div class="box-title">procesador_cartera.py</div>
+                    <ul class="box-list">
+                        <li>• Calcula días vencidos</li>
+                        <li>• Rangos 30/60/90/180/360</li>
+                        <li>• Columnas históricas</li>
+                    </ul>
+                </div>
+                <div class="flow-box color-python">
+                    <div class="icon">🐍</div>
+                    <div class="box-title">procesador_anticipos.py</div>
+                    <ul class="box-list">
+                        <li>• Limpia datos</li>
+                        <li>• Valores negativos</li>
+                        <li>• Estandariza formato</li>
+                    </ul>
+                </div>
+                <div class="flow-box color-python">
+                    <div class="icon">🐍</div>
+                    <div class="box-title">modelo_deuda.py</div>
+                    <ul class="box-list">
+                        <li>• Integra cartera + anticipos</li>
+                        <li>• Aplica TRM USD/EUR</li>
+                        <li>• Calcula neto consolidado</li>
+                    </ul>
+                </div>
+                <div class="flow-box color-python">
+                    <div class="icon">🐍</div>
+                    <div class="box-title">procesar_y_actualizar_focus.py</div>
+                    <ul class="box-list">
+                        <li>• Procesa balance</li>
+                        <li>• Celdas Q22, Q15-Q21</li>
+                        <li>• Fórmulas financieras</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="arrow-separator">→</div>
+            
+            <!-- Columna 6: Archivos de Salida -->
+            <div class="flow-column">
+                <div class="column-header">6. Archivos Excel</div>
+                <div class="flow-box color-output">
+                    <div class="icon">📄</div>
+                    <div class="box-title">Cartera.xlsx</div>
+                    <div class="box-text">Con rangos de vencimiento</div>
+                </div>
+                <div class="flow-box color-output">
+                    <div class="icon">📄</div>
+                    <div class="box-title">Anticipos.xlsx</div>
+                    <div class="box-text">Valores negativos</div>
+                </div>
+                <div class="flow-box color-output">
+                    <div class="icon">📄</div>
+                    <div class="box-title">Modelo_Deuda.xlsx</div>
+                    <div class="box-text">Consolidado con TRM</div>
+                </div>
+                <div class="flow-box color-output">
+                    <div class="icon">📄</div>
+                    <div class="box-title">FOCUS.xlsx</div>
+                    <div class="box-text">Cálculos financieros</div>
+                </div>
+            </div>
+            
+            <div class="arrow-separator">→</div>
+            
+            <!-- Columna 7: Almacenamiento y Descarga -->
+            <div class="flow-column">
+                <div class="column-header">7. Entrega</div>
+                <div class="flow-box color-storage">
+                    <div class="icon">💾</div>
+                    <div class="box-title">salidas/</div>
+                    <div class="box-text">Almacena archivos generados</div>
+                </div>
+                <div class="flow-box color-user">
+                    <div class="icon">⬇️</div>
+                    <div class="box-title">Descarga</div>
+                    <div class="box-text">Usuario obtiene resultado procesado</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Sistema de Logs -->
+        <div class="logs-section">
+            <div class="logs-title">🔍 Sistema de Monitoreo y Logs</div>
+            <div class="logs-boxes">
+                <div class="flow-box color-log" style="max-width: 400px;">
+                    <div class="icon">📝</div>
+                    <div class="box-title">system_log.txt</div>
+                    <div class="box-text">
+                        Registro centralizado en formato JSON<br>
+                        Logs de PHP y Python
+                    </div>
+                </div>
+                <div class="flow-box color-log" style="max-width: 400px;">
+                    <div class="icon">👁️</div>
+                    <div class="box-title">viewer.php</div>
+                    <div class="box-text">
+                        Visualizador web de logs<br>
+                        Filtros y búsqueda avanzada
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Leyenda -->
+        <div class="legend">
+            <h3>📌 Leyenda de Componentes</h3>
+            <div class="legend-grid">
+                <div class="legend-item">
+                    <div class="legend-color" style="background: linear-gradient(135deg, #c8e6c9, #a5d6a7); border: 3px solid #4caf50;"></div>
+                    <span><strong>Generadores Python:</strong> Núcleo de procesamiento de datos (★ destacados con borde verde)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: linear-gradient(135deg, #f8bbd0, #f48fb1);"></div>
+                    <span><strong>Archivos de Salida:</strong> Resultados en formato Excel</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: linear-gradient(135deg, #fff9c4, #fff59d);"></div>
+                    <span><strong>Interfaz Web:</strong> Frontend desarrollado en PHP</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: linear-gradient(135deg, #ffccbc, #ffab91);"></div>
+                    <span><strong>Sistema de Logs:</strong> Monitoreo y auditoría completa</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Configuración básica para WAMP
+Options +FollowSymLinks
+RewriteEngine On
+DirectoryIndex index.php index.html
+
+# Permitir acceso a archivos PHP
+<FilesMatch "\.php$">
+    Require all granted
+</FilesMatch>
+
+# Permitir descarga de archivos Excel
+<FilesMatch "\.(xlsx|xls|csv)$">
+    Require all granted
+</FilesMatch>
+
+# Deshabilitar listado de directorios
+Options -Indexes
+
+# Permitir acceso directo a archivos PHP específicos
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.*)$ index.php [L]

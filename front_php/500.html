@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Error 500 - Error interno del servidor</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: #333;
+        }
+        .container {
+            text-align: center;
+            background: white;
+            padding: 2rem;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            max-width: 500px;
+            margin: 20px;
+        }
+        .error-code {
+            font-size: 5rem;
+            font-weight: bold;
+            color: #f5576c;
+            margin: 0;
+        }
+        .error-title {
+            font-size: 2rem;
+            margin: 1rem 0;
+            color: #333;
+        }
+        .error-message {
+            font-size: 1.1rem;
+            color: #666;
+            margin-bottom: 2rem;
+            line-height: 1.6;
+        }
+        .back-button {
+            display: inline-block;
+            background: #f5576c;
+            color: white;
+            padding: 12px 24px;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: 500;
+            transition: background 0.3s ease;
+        }
+        .back-button:hover {
+            background: #e04a5d;
+            transform: translateY(-2px);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="error-code">500</h1>
+        <h2 class="error-title">Error interno del servidor</h2>
+        <p class="error-message">
+            Lo sentimos, ha ocurrido un error interno en el servidor.<br>
+            Nuestro equipo ha sido notificado y está trabajando para resolverlo.<br>
+            Por favor intenta nuevamente más tarde.
+        </p>
+        <a href="/front_php/" class="back-button">Volver al inicio</a>
+    </div>
+</body>
+</html>

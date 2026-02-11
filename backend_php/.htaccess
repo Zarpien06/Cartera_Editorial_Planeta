@@ -1,0 +1,26 @@
+# Habilitar el motor de reescritura
+RewriteEngine On
+
+# Si el archivo o directorio no existe, redirigir a index.php
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+
+# Reglas para la API
+RewriteRule ^api/process$ api/process.php [L,QSA]
+RewriteRule ^api/download/(.+)$ api/download.php?file=$1 [L,QSA]
+
+# Configuración de CORS
+Header set Access-Control-Allow-Origin "*"
+Header set Access-Control-Allow-Methods "GET, POST, OPTIONS"
+Header set Access-Control-Allow-Headers "X-API-KEY, Content-Type"
+
+# Manejo de errores
+ErrorDocument 404 /backend_php/api/error.php?code=404
+ErrorDocument 500 /backend_php/api/error.php?code=500
+
+# Configuración de PHP
+php_flag display_errors off
+php_value upload_max_filesize 50M
+php_value post_max_size 55M
+php_value max_execution_time 300
+php_value max_input_time 300
