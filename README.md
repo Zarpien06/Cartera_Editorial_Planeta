@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Sistema de Procesamiento de Cartera v3.0.0
 
 ## Descripción General
@@ -537,3 +538,6 @@ Sistema de uso interno del Grupo Planeta. No distribuible sin autorización.
 ## Contacto
 
 Para soporte técnico y mantenimiento, contactar al equipo de desarrollo del Grupo Planeta.
+=======
+Sistema para facilitar procesos manuales en el area de cartera de la empresa Editorial Planeta 
+>>>>>>> 9603acb3eadda39a6eaa50d0c6559f96506d34fb
