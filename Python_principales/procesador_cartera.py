@@ -263,7 +263,7 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str="2025-11-30"
         'NUMERO FACTURA', 'TIPO', 'FECHA', 'FECHA VTO', 'VALOR', 'SALDO', 
         'DIAS VENCIDO', 'SALDO NO VENCIDO', 'VENCIDO 30', 'VENCIDO 60', 
         'VENCIDO 90', 'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360', 
-        'DEUDA INCOBRABLE' 'STIKERS'
+        'DEUDA INCOBRABLE'
     ]
     
     for col in columnas_requeridas:
