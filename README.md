@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 # Sistema de Procesamiento de Cartera v3.0.0
 
 ## Descripción General
