@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Procesador de Anticipos PROVCA - PISA
-Transforma archivos CSV de anticipos en formato Excel
+Transforma archivos CSV de anticipos con la misma estructura que cartera
+para consolidación en Modelo Deuda
 """
 
 import csv
@@ -19,7 +20,6 @@ try:
     from config_logging import logger, log_inicio_proceso, log_fin_proceso, log_error_proceso
     USE_UNIFIED_LOGGING = True
 except ImportError:
-    # Fallback al logging original si config_logging no está disponible
     LOG_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'procesador_anticipos.log')
     logging.basicConfig(
         filename=LOG_FILE_PATH,
@@ -45,39 +45,51 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(BASE_DIR, 'salidas')
 os.makedirs(OUT_DIR, exist_ok=True)
 
-# Mapeo de columnas según especificación PISA
+# Mapeo de columnas según especificación PISA para anticipos
 RENOMBRES = {
-    "NCCDEM": "EMPRESA",
-    "NCCDAC": "ACTIVIDAD",
-    "NCCDCL": "CODIGO CLIENTE",
-    "WWNIT": "NIT/CEDULA",
-    "WWNMCL": "NOMBRE COMERCIAL",
-    "WWNMDO": "DIRECCION",
-    "WWTLF1": "TELEFONO",
-    "WWNMPO": "POBLACION",
-    "CCCDFB": "CODIGO AGENTE",
-    "BDNMNM": "NOMBRE AGENTE",
-    "BDNMPA": "APELLIDO AGENTE",
-    "NCMOMO": "TIPO ANTICIPO",
-    "NCCDR3": "NRO ANTICIPO",
-    "NCIMAN": "VALOR ANTICIPO",
-    "NCFEGR": "FECHA ANTICIPO",
-    '"NCCDEM"': "EMPRESA",
-    '"NCCDAC"': "ACTIVIDAD",
-    '"NCCDCL"': "CODIGO CLIENTE",
-    '"WWNIT"': "NIT/CEDULA",
-    '"WWNMCL"': "NOMBRE COMERCIAL",
-    '"WWNMDO"': "DIRECCION",
-    '"WWTLF1"': "TELEFONO",
-    '"WWNMPO"': "POBLACION",
-    '"CCCDFB"': "CODIGO AGENTE",
-    '"BDNMNM"': "NOMBRE AGENTE",
-    '"BDNMPA"': "APELLIDO AGENTE",
-    '"NCMOMO"': "TIPO ANTICIPO",
-    '"NCCDR3"': "NRO ANTICIPO",
-    '"NCIMAN"': "VALOR ANTICIPO",
-    '"NCFEGR"': "FECHA ANTICIPO"
+         "NCCDEM": "EMPRESA",
+         "NCCDAC": "ACTIVIDAD",
+         "NCCDCL": "CODIGO CLIENTE",
+         "WWNIT": "NRO DOCUMENTO",
+         "WWNMCL": "NOMBRE COMERCIAL",
+         "WWNMDO": "DIRECCION",
+         "WWTLF1": "TELEFONO",
+         "CCCDFB": "CODIGO AGENTE",
+         "BDNMNM": "NOMBRE AGENTE",
+         "BDNMPA": "APELLIDO AGENTE",
+         "NCMOMO": "TIPO ANTICIPO",
+         "NCCDR3": "NRO ANTICIPO",
+         "NCIMAN": "VALOR ANTICIPO",
+         "NCFEGR": "FECHA ANTICIPO",
+         '"NCCDEM"': "EMPRESA",
+         '"NCCDAC"': "ACTIVIDAD",
+         '"NCCDCL"': "CODIGO CLIENTE",
+         '"WWNIT"': "NRO DOCUMENTO",
+         '"WWNMCL"': "NOMBRE COMERCIAL",
+         '"WWNMDO"': "DIRECCION",
+         '"WWTLF1"': "TELEFONO",
+         '"CCCDFB"': "CODIGO AGENTE",
+         '"BDNMNM"': "NOMBRE AGENTE",
+         '"BDNMPA"': "APELLIDO AGENTE",
+         '"NCMOMO"': "TIPO ANTICIPO",
+         '"NCCDR3"': "NRO ANTICIPO",
+         '"NCIMAN"': "VALOR ANTICIPO",
+         '"NCFEGR"': "FECHA ANTICIPO"
 }
+
+def info(msg):
+    print(msg)
+    if USE_UNIFIED_LOGGING:
+        logger.info(msg)
+    else:
+        logging.info(msg)
+
+def error(msg):
+    print(f"\nERROR: {msg}")
+    if USE_UNIFIED_LOGGING:
+        logger.error(msg)
+    else:
+        logging.error(msg)
 
 def convertir_valor_to_float(x):
     """Convierte valores de texto a float"""
@@ -99,266 +111,367 @@ def convertir_valor_to_float(x):
         digits = "".join(ch for ch in s if ch.isdigit() or ch == "." or ch == "-")
         return float(digits) if digits else 0.0
 
-def procesar_anticipos(input_path, output_path=None):
+def parse_fecha_segura(serie):
+    """Parsea fechas manejando múltiples formatos"""
+    serie = serie.astype(str).str.strip()
+    fechas = pd.Series(pd.NaT, index=serie.index)
+
+    # Detectar formato YYYYMMDD exacto (8 dígitos)
+    mask_ymd = serie.str.match(r"^\d{8}$")
+
+    # Parsear YYYYMMDD explícitamente
+    if mask_ymd.any():
+        fechas.loc[mask_ymd] = pd.to_datetime(
+            serie.loc[mask_ymd],
+            format="%Y%m%d",
+            errors="coerce"
+        )
+
+    # Parsear resto como formato día primero (DD/MM/YYYY)
+    if (~mask_ymd).any():
+        fechas.loc[~mask_ymd] = pd.to_datetime(
+            serie.loc[~mask_ymd],
+            dayfirst=True,
+            errors="coerce"
+        )
+
+    return fechas
+
+def procesar_anticipos(input_path, output_path=None, fecha_cierre_str="2025-11-30"):
     """
-    Procesa el archivo de anticipos según las especificaciones PISA
+    Procesa el archivo de anticipos según procedimiento.
+    Los anticipos van en las columnas: SALDO, SALDO NO VENCIDO (por vencer)
+    y deben tener la misma estructura que cartera para consolidación.
     """
     if USE_UNIFIED_LOGGING:
         log_inicio_proceso("ANTICIPOS", input_path)
-    else:
-        logging.info(f"Iniciando procesamiento de anticipos: {input_path}")
-    print(f"\n=== PROCESADOR DE ANTICIPOS ===")
     
-    abs_input_path = os.path.abspath(input_path)
+    info("\n=== PROCESADOR DE ANTICIPOS ===")
+    info(f"Fecha de cierre: {fecha_cierre_str}")
     
-    if not os.path.exists(abs_input_path):
-        error_msg = f"No se encontró el archivo: {abs_input_path}"
-        if USE_UNIFIED_LOGGING:
-            log_error_proceso("ANTICIPOS", error_msg)
-        else:
-            logging.error(error_msg)
-        raise FileNotFoundError(error_msg)
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"No se encontró el archivo: {input_path}")
     
-    # Leer archivo CSV
-    try:
-        df = pd.read_csv(
-            abs_input_path,
-            sep=";",
-            encoding="latin1",
-            dtype=str,
-            keep_default_na=False,
-            na_values=[""],
-            quoting=csv.QUOTE_MINIMAL
-        )
-        if USE_UNIFIED_LOGGING:
-            logger.info(f"[ANTICIPOS] Archivo CSV leído: {len(df)} filas")
-        else:
-            logging.info(f"Archivo CSV leído: {len(df)} filas")
-        print(f"✓ Archivo leído: {len(df)} registros")
-    except Exception as e:
-        if USE_UNIFIED_LOGGING:
-            log_error_proceso("ANTICIPOS", f"Error al leer CSV: {str(e)}")
-        else:
-            logging.error(f"Error al leer CSV: {str(e)}")
-        raise
+    # -------------------------
+    # 1. LEER ARCHIVO CSV
+    # -------------------------
+    encodings = ['utf-8-sig', 'latin1', 'cp1252']
+    df = None
+
+    for enc in encodings:
+        try:
+            df = pd.read_csv(
+                input_path,
+                sep=";",
+                encoding=enc,
+                dtype=str,
+                keep_default_na=False,
+                na_values=[""]
+            )
+            if len(df) > 0:
+                info(f"✓ Archivo leído con encoding {enc}")
+                break
+        except:
+            continue
+
+    if df is None:
+        raise ValueError("No se pudo leer el archivo")
+
+    info(f"✓ Total registros iniciales: {len(df)}")
     
-    # Renombrar columnas
+    # -------------------------
+    # 2. RENOMBRAR COLUMNAS
+    # -------------------------
     df.rename(columns=RENOMBRES, inplace=True)
+    info("✓ Columnas renombradas")
     
-    # Asegurar columnas mínimas
-    columnas_minimas = ["EMPRESA", "ACTIVIDAD", "CODIGO CLIENTE", "NIT/CEDULA", 
-                        "NOMBRE COMERCIAL", "VALOR ANTICIPO", "DENOMINACION COMERCIAL"]
-    
-    for col in columnas_minimas:
-        if col not in df.columns:
-            df[col] = ""
-    
-    # Si no hay DENOMINACION COMERCIAL, usar NOMBRE COMERCIAL
-    if "NOMBRE COMERCIAL" in df.columns and "DENOMINACION COMERCIAL" in df.columns:
-        df["DENOMINACION COMERCIAL"] = df["DENOMINACION COMERCIAL"].where(df["DENOMINACION COMERCIAL"] != "", df["NOMBRE COMERCIAL"])
-    
-    # Limpiar caracteres no imprimibles
+    # -------------------------
+    # 3. LIMPIAR CARACTERES NO IMPRIMIBLES
+    # -------------------------
     invalid_chars = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
     for col in df.select_dtypes(include=['object']).columns:
         df[col] = df[col].apply(
             lambda x: invalid_chars.sub("", x) if isinstance(x, str) else x
         )
     
-    # Convertir VALOR ANTICIPO a numérico y multiplicar por -1
+    # -------------------------
+    # 4. CONVERTIR VALOR ANTICIPO Y MULTIPLICAR POR -1
+    # -------------------------
     if "VALOR ANTICIPO" in df.columns:
         df["VALOR ANTICIPO"] = df["VALOR ANTICIPO"].apply(convertir_valor_to_float)
         df["VALOR ANTICIPO"] = df["VALOR ANTICIPO"] * -1
-        df["VALOR ANTICIPO"] = pd.to_numeric(df["VALOR ANTICIPO"], errors='coerce').fillna(0)
-        
         total_anticipos = df["VALOR ANTICIPO"].sum()
-        print(f"✓ Total anticipos: ${abs(total_anticipos):,.0f} (multiplicado por -1)")
-    
-    # Crear columna SALDO (copia de VALOR ANTICIPO)
-    df["SALDO"] = df["VALOR ANTICIPO"]
-    
-    # Formatear fechas
-    if "FECHA ANTICIPO" in df.columns:
-        df["FECHA ANTICIPO"] = df["FECHA ANTICIPO"].astype(str).str.strip()
-        df["FECHA ANTICIPO"] = df["FECHA ANTICIPO"].replace(['', 'nan', 'None', 'NaT', 'NaN', '<NA>'], np.nan)
-        
-        def parse_fecha(fecha_str):
-            if pd.isna(fecha_str) or fecha_str in ['', 'NaT', 'nan', 'None', 'NaN', '<NA>']:
-                return np.nan
-            
-            fecha_str = str(fecha_str).strip()
-            if not fecha_str or fecha_str.lower() in ['nan', 'none', 'nat', 'null', '', '<na>']:
-                return np.nan
-            
-            # Lista ampliada de formatos de fecha
-            formatos = [
-                '%Y%m%d', '%Y-%m-%d', '%d-%m-%Y', '%Y/%m/%d', '%d/%m/%Y',
-                '%Y-%m-%d %H:%M:%S', '%d/%m/%Y %H:%M:%S', '%Y%m%d%H%M%S'
-            ]
-            
-            for fmt in formatos:
-                try:
-                    return pd.to_datetime(fecha_str, format=fmt, errors='raise')
-                except:
-                    continue
-            
-            # Intento final con inferencia automática
-            try:
-                return pd.to_datetime(fecha_str, infer_datetime_format=True, errors='coerce')
-            except:
-                return np.nan
-        
-        # Aplicar parseo de fecha con manejo de errores mejorado
-        try:
-            df["FECHA ANTICIPO"] = df["FECHA ANTICIPO"].apply(parse_fecha)
-            df["FECHA ANTICIPO"] = df["FECHA ANTICIPO"].apply(
-                lambda x: x.date() if pd.notna(x) and hasattr(x, 'date') else x
-            )
-        except Exception as e:
-            print(f"[WARN] Error al parsear fechas: {e}")
-            # En caso de error, dejar las fechas como están
-            pass
-    
-    # Crear LINEA_VENTA combinando EMPRESA y ACTIVIDAD
-    if 'EMPRESA' in df.columns and 'ACTIVIDAD' in df.columns:
-        df['ACTIVIDAD'] = df['ACTIVIDAD'].astype(str).str.strip()
-        df['LINEA_VENTA'] = df['EMPRESA'].astype(str).str.strip() + df['ACTIVIDAD'].str.zfill(2)
-        print(f"✓ Línea de venta creada")
+        info(f"✓ Total anticipos: ${abs(total_anticipos):,.2f} (multiplicado por -1)")
     else:
-        df['LINEA_VENTA'] = ''
+        df["VALOR ANTICIPO"] = 0.0
     
-    # Eliminar LINEA DE NEGOCIO ya que no está en la lista de columnas requeridas
-    if 'LINEA DE NEGOCIO' in df.columns:
-        df = df.drop(columns=['LINEA DE NEGOCIO'])
+    # -------------------------
+    # 5. MAPEAR A ESTRUCTURA DE CARTERA
+    # Según procedimiento: "estos datos van en las columnas de 
+    # SALDOS, SALDO POR VENCER y SALDO NO VENCIDO"
+    # -------------------------
     
-    # Asignar moneda según la línea de venta
-    df['MONEDA'] = 'PESOS COL'  # Por defecto es pesos colombianos
+    # Crear columnas compatibles con estructura de cartera
+    df["SALDO"] = df["VALOR ANTICIPO"]
+    df["NO VENCIDO"] = df["VALOR ANTICIPO"]  # Los anticipos son saldos por vencer
+    df["TOTAL POR VENCER"] = df["VALOR ANTICIPO"]
     
-    # Líneas en dólares
-    lineas_usd = ['PL11', 'PL18', 'PL57', 'PL72', 'PL17']
-    # Líneas en euros
-    lineas_eur = ['PL16', 'PL41', 'PL68']
+    # Columnas de vencimiento en cero (anticipos no tienen vencimiento)
+    df["VENCIDO 30"] = 0.0
+    df["VENCIDO 60"] = 0.0
+    df["VENCIDO 90"] = 0.0
+    df["VENCIDO 180"] = 0.0
+    df["VENCIDO 360"] = 0.0
+    df["VENCIDO +360"] = 0.0
+    df["DEUDA INCOBRABLE"] = 0.0
+    df["MORA TOTAL"] = 0.0
+    df["SALDO VENCIDO TOTAL"] = 0.0
+    df["DIAS VENCIDO"] = 0
+    df["DIAS POR VENCER"] = 0
+    df["% DOTACION"] = 0
+    df["VALOR DOTACION"] = 0.0
     
-    # Actualizar moneda según la LINEA_VENTA
-    df.loc[df['LINEA_VENTA'].isin(lineas_usd), 'MONEDA'] = 'USD'
-    df.loc[df['LINEA_VENTA'].isin(lineas_eur), 'MONEDA'] = 'EUR'
-        
-    # Agregar columnas requeridas para el archivo de anticipos
-    df['SALDO'] = df['VALOR ANTICIPO']  # Los anticipos son valores negativos
-    df['SALDO NO VENCIDO'] = df['VALOR ANTICIPO']  # Los anticipos son valores negativos
-    df['DEUDA INCOBRABLE'] = 0.0
+    # -------------------------
+    # 6. MAPEAR CAMPOS DE ANTICIPOS A CARTERA
+    # -------------------------
+    # Crear mapeo de campos
+    df["IDENTIFICACION"] = df.get("NIT/CEDULA", "")
+    df["NOMBRE"] = df.get("NOMBRE COMERCIAL", "")
+    df["DENOMINACION COMERCIAL"] = df.get("NOMBRE COMERCIAL", "")
+    df["DIRECCION"] = df.get("DIRECCION", "")
+    df["TELEFONO"] = df.get("TELEFONO", "")
+    df["CIUDAD"] = df.get("POBLACION", "")
+    df["NUMERO FACTURA"] = df.get("NRO ANTICIPO", "")
+    df["TIPO"] = df.get("TIPO ANTICIPO", "ANTICIPO")
+    df["VALOR"] = df["VALOR ANTICIPO"]
     
-    # Eliminar columnas EMPRESA y ACTIVIDAD ya que su información está representada en LINEA_VENTA
-    if 'EMPRESA' in df.columns:
-        df = df.drop(columns=['EMPRESA'])
-    if 'ACTIVIDAD' in df.columns:
-        df = df.drop(columns=['ACTIVIDAD'])
+    # Agente
+    if "NOMBRE AGENTE" in df.columns and "APELLIDO AGENTE" in df.columns:
+        df["AGENTE"] = (df["NOMBRE AGENTE"].astype(str).str.strip() + " " + 
+                       df["APELLIDO AGENTE"].astype(str).str.strip()).str.strip()
+    else:
+        df["AGENTE"] = ""
     
-    # Definir columnas de salida según especificación PISA para anticipos
-    COLUMNAS_SALIDA = [
-        'LINEA_VENTA', 
-        'MONEDA', 
-        'SALDO', 
-        'SALDO NO VENCIDO', 
-        'DEUDA INCOBRABLE',
-        'CODIGO CLIENTE', 
-        'NIT/CEDULA',
-        'NOMBRE COMERCIAL',
-        'DIRECCION', 
-        'TELEFONO', 
-        'POBLACION',
-        'CODIGO AGENTE', 
-        'NOMBRE AGENTE',
-        'APELLIDO AGENTE', 
-        'TIPO ANTICIPO',
-        'NRO ANTICIPO', 
-        'VALOR ANTICIPO',
-        'FECHA ANTICIPO'
+    # -------------------------
+    # 7. PROCESAR FECHAS
+    # -------------------------
+    if "FECHA ANTICIPO" in df.columns:
+        df["FECHA"] = parse_fecha_segura(df["FECHA ANTICIPO"])
+        df["FECHA VTO"] = df["FECHA"]  # Misma fecha
+    else:
+        df["FECHA"] = pd.NaT
+        df["FECHA VTO"] = pd.NaT
+    
+    fecha_cierre = pd.to_datetime(fecha_cierre_str)
+    
+    # Separar fecha de vencimiento
+    df["DIA VTO"] = df["FECHA VTO"].dt.day
+    df["MES VTO"] = df["FECHA VTO"].dt.month
+    df["AÑO VTO"] = df["FECHA VTO"].dt.year
+    
+    # -------------------------
+    # 8. ASEGURAR TODAS LAS COLUMNAS DE CARTERA
+    # -------------------------
+    columnas_cartera = [
+        "EMPRESA",
+        "ACTIVIDAD",
+        "CODIGO CLIENTE",
+        "NRO DOCUMENTO",
+        "DENOMINACION COMERCIAL",
+        "DIRECCION",
+        "TELEFONO",
+        "CIUDAD",
+        "CODIGO AGENTE",
+        "NOMBRE AGENTE",
+        "APELLIDO AGENTE",
+        "TIPO ANTICIPO",
+        "NRO ANTICIPO",
+        "VALOR ANTICIPO",
+        "FECHA ANTICIPO"
     ]
     
-    # Asegurar que todas las columnas requeridas existan
-    for col in COLUMNAS_SALIDA:
+    for col in columnas_cartera:
         if col not in df.columns:
-            df[col] = ""
+            if col in ["SALDO", "VALOR", "NO VENCIDO", "VENCIDO 30", "VENCIDO 60", 
+                      "VENCIDO 90", "VENCIDO 180", "VENCIDO 360", "VENCIDO +360",
+                      "DEUDA INCOBRABLE", "MORA TOTAL", "SALDO VENCIDO TOTAL",
+                      "VALOR DOTACION", "TOTAL POR VENCER"]:
+                df[col] = 0.0
+            elif col in ["FECHA", "FECHA VTO"]:
+                df[col] = pd.NaT
+            elif col in ["DIAS VENCIDO", "DIAS POR VENCER", "% DOTACION"]:
+                df[col] = 0
+            else:
+                df[col] = ""
     
-    # Seleccionar y ordenar columnas finales
-    df = df[COLUMNAS_SALIDA]
-    
-    # Generar nombre de archivo de salida
+    # -------------------------
+    # 9. GENERAR NOMBRE DE SALIDA
+    # -------------------------
+    nombre_mes = fecha_cierre.strftime("%B").upper()
+    anio = fecha_cierre.strftime("%Y")
+
+    MESES_ES = {
+        "JANUARY": "ENERO", "FEBRUARY": "FEBRERO", "MARCH": "MARZO",
+        "APRIL": "ABRIL", "MAY": "MAYO", "JUNE": "JUNIO",
+        "JULY": "JULIO", "AUGUST": "AGOSTO", "SEPTEMBER": "SEPTIEMBRE",
+        "OCTOBER": "OCTUBRE", "NOVEMBER": "NOVIEMBRE", "DECEMBER": "DICIEMBRE"
+    }
+    nombre_mes = MESES_ES.get(nombre_mes, nombre_mes)
+
     if not output_path:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = os.path.join(OUT_DIR, f"ANTICIPOS_{timestamp}.xlsx")
-    elif os.path.isdir(output_path):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = os.path.join(output_path, f"ANTICIPOS_{timestamp}.xlsx")
+        output_path = os.path.join(
+            OUT_DIR,
+            f"ANTICIPOS_{nombre_mes}_{anio}.xlsx"
+        )
     
-    abs_output_path = os.path.abspath(output_path)
+    # -------------------------
+    # 10. RESUMEN
+    # -------------------------
+    resumen = pd.DataFrame({
+        "CONCEPTO": [
+            "SALDO TOTAL ANTICIPOS",
+            "NO VENCIDO (POR VENCER)",
+            "TOTAL REGISTROS"
+        ],
+        "VALOR": [
+            df["SALDO"].sum(),
+            df["NO VENCIDO"].sum(),
+            len(df)
+        ]
+    })
     
-    # Asegurar directorio de salida
-    output_dir = os.path.dirname(abs_output_path)
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir, exist_ok=True)
+    # -------------------------
+    # 11. EXPORTAR A EXCEL
+    # -------------------------
+    info("\n=== GENERANDO ARCHIVO EXCEL ===")
     
-    # Guardar en Excel
-    try:
-        writer = pd.ExcelWriter(abs_output_path, engine="xlsxwriter")
-        df.to_excel(writer, index=False, sheet_name="Anticipos")
-        
-        ws = writer.sheets["Anticipos"]
-        book = writer.book
+    with pd.ExcelWriter(
+        output_path,
+        engine="xlsxwriter",
+        date_format="dd/mm/yyyy",
+        datetime_format="dd/mm/yyyy"
+    ) as writer:
+
+        # Seleccionar solo columnas de cartera en orden
+        df_salida = df[columnas_cartera]
+        df_salida.to_excel(writer, index=False, sheet_name="ANTICIPOS")
+        resumen.to_excel(writer, index=False, sheet_name="RESUMEN")
+
+        workbook = writer.book
+        worksheet = writer.sheets["ANTICIPOS"]
+        worksheet_resumen = writer.sheets["RESUMEN"]
         
         # Formatos
-        fmt_text = book.add_format({"num_format": "@"})
-        fmt_numero = book.add_format({"num_format": "#,##0;-#,##0;\"-\";@"})
-        fmt_fecha = book.add_format({"num_format": "dd-mm-yyyy"})
+        date_format = workbook.add_format({'num_format': 'dd/mm/yyyy'})
+        number_format = workbook.add_format({'num_format': '#,##0.00'})
+        percent_format = workbook.add_format({'num_format': '0%'})
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': "#020066",
+            'font_color': 'white',
+            'align': 'center',
+            'valign': 'vcenter',
+            'border': 1
+        })
         
-        # Aplicar formatos
-        columnas_montos = ["VALOR ANTICIPO"]
+        # Aplicar formato a encabezados
+        for col_num, value in enumerate(df_salida.columns.values):
+            worksheet.write(0, col_num, value, header_format)
         
-        for idx, col_name in enumerate(df.columns):
-            if col_name in columnas_montos:
-                ws.set_column(idx, idx, 20, fmt_numero)
-            elif col_name in ["FECHA ANTICIPO"]:
-                ws.set_column(idx, idx, 15, fmt_fecha)
+        # Identificar columnas por tipo
+        fecha_cols = []
+        valor_cols = []
+        percent_cols = []
+        
+        for i, col in enumerate(df_salida.columns):
+            if df_salida[col].dtype == 'datetime64[ns]':
+                fecha_cols.append(i)
+            elif col == "% DOTACION":
+                percent_cols.append(i)
+            elif col in ["SALDO", "VALOR", "NO VENCIDO", "VENCIDO 30", "VENCIDO 60", 
+                        "VENCIDO 90", "VENCIDO 180", "VENCIDO 360", "VENCIDO +360",
+                        "DEUDA INCOBRABLE", "MORA TOTAL", "SALDO VENCIDO TOTAL",
+                        "VALOR DOTACION", "TOTAL POR VENCER", "VALOR ANTICIPO"]:
+                valor_cols.append(i)
+        
+        # Autoajustar columnas
+        for i, col in enumerate(df_salida.columns):
+            if df_salida[col].dtype == 'datetime64[ns]':
+                max_len = max(len(col), 12) + 2
             else:
-                ws.set_column(idx, idx, 20, fmt_text)
+                max_len = max(
+                    df_salida[col].astype(str).map(len).max(),
+                    len(col)
+                ) + 2
+            
+            if i in fecha_cols:
+                worksheet.set_column(i, i, max_len, date_format)
+            elif i in percent_cols:
+                worksheet.set_column(i, i, max_len, percent_format)
+            elif i in valor_cols:
+                worksheet.set_column(i, i, max_len, number_format)
+            else:
+                worksheet.set_column(i, i, max_len)
         
-        writer.close()
+        # Formato para resumen
+        worksheet_resumen.set_column(0, 0, 30)
+        worksheet_resumen.set_column(1, 1, 20, number_format)
         
-        print(f"\n✓ Archivo guardado: {abs_output_path}")
-        logging.info(f"Archivo generado: {abs_output_path}")
-        return abs_output_path
+        for col_num, value in enumerate(resumen.columns.values):
+            worksheet_resumen.write(0, col_num, value, header_format)
+
+    info(f"\n✓ Archivo generado: {output_path}")
+    info(f"✓ Total registros: {len(df)}")
+    info(f"✓ Total anticipos: ${abs(df['SALDO'].sum()):,.2f}")
     
-    except Exception as e:
-        logging.error(f"Error al guardar Excel: {str(e)}")
-        raise
+    if USE_UNIFIED_LOGGING:
+        log_fin_proceso("ANTICIPOS", output_path, {"registros": len(df)})
+    
+    return output_path
 
 def main():
     """Punto de entrada principal"""
     try:
+        input_path = None
+        output_path = None
+        # Fecha cierre automática: último día del mes actual
+        hoy = datetime.today()
+        ultimo_dia_mes = pd.Period(hoy.strftime("%Y-%m")).end_time.date()
+        fecha_cierre = str(ultimo_dia_mes)
+
         if len(sys.argv) > 1:
             input_path = sys.argv[1]
-            output_path = sys.argv[2] if len(sys.argv) > 2 else None
-            resultado = procesar_anticipos(input_path, output_path)
-            if USE_UNIFIED_LOGGING:
-                log_fin_proceso("ANTICIPOS", resultado or "salida por defecto", 
-                              {"registros": "desconocido"})
-        else:
-            print("=== Procesador de Anticipos ===")
-            input_path = input("Ruta del archivo CSV: ").strip()
-            output_path = input("Ruta de salida (Enter para default): ").strip() or None
-            
-            resultado = procesar_anticipos(input_path, output_path)
-            print(f"\n✓ Procesamiento completado")
-            if USE_UNIFIED_LOGGING:
-                log_fin_proceso("ANTICIPOS", resultado or "salida por defecto", 
-                              {"registros": "desconocido"})
-    
+
+        if len(sys.argv) > 2:
+            arg2 = sys.argv[2]
+            try:
+                pd.to_datetime(arg2, format="%Y-%m-%d")
+                fecha_cierre = arg2
+            except:
+                output_path = arg2
+
+        if len(sys.argv) > 3:
+            fecha_cierre = sys.argv[3]
+
+        if not input_path:
+            raise ValueError("No se recibió archivo de entrada")
+
+        resultado = procesar_anticipos(input_path, output_path, fecha_cierre)
+
+        info(f"\n{'='*60}")
+        info(f"PROCESO COMPLETADO EXITOSAMENTE")
+        info(f"{'='*60}")
+        info(f"Archivo: {resultado}")
+
     except Exception as e:
         if USE_UNIFIED_LOGGING:
             log_error_proceso("ANTICIPOS", str(e))
         else:
             logging.error(f"Error: {str(e)}", exc_info=True)
-        print(f"\n✗ ERROR: {str(e)}")
+        print(f"\n{'='*60}")
+        print(f"ERROR EN EL PROCESO")
+        print(f"{'='*60}")
+        print(f"{str(e)}")
         sys.exit(1)
 
 if __name__ == "__main__":
