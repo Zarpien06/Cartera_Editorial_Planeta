@@ -112,7 +112,7 @@ require_once 'config.php';
 
     <!-- Footer -->
     <footer>
-        © 2025 Grupo Planeta - Sistema de Procesamiento de Cartera
+        © 2026 Grupo Planeta - Sistema de Procesamiento de Cartera
     </footer>
 
     <!-- Modal TRM - Rediseñado -->

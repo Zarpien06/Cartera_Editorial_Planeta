@@ -1262,3 +1262,5 @@ Archivo generado: C:\wamp64\www\cartera_v3.0.0\Python_principales\salidas\CARTER
 [SISTEMA_CARTERA] [INFO] PROCESO COMPLETADO EXITOSAMENTE [procesador_anticipos.py:83]
 [SISTEMA_CARTERA] [INFO] ============================================================ [procesador_anticipos.py:83]
 [SISTEMA_CARTERA] [INFO] Archivo: C:\wamp64\www\cartera_v3.0.0\Python_principales\salidas\ANTICIPOS_FEBRERO_2026.xlsx [procesador_anticipos.py:83]
+[SISTEMA_CARTERA] [INFO] [MODELO_DEUDA] [INICIO] archivo: C:\wamp64\www\cartera_v3.0.0\front_php\uploads\CARTERA_20260217_135651_6994dd133b7387.19897532.xlsx + C:\wamp64\www\cartera_v3.0.0\front_php\uploads\ANTICIPOS_FEBRERO_2026_6994dd133d4c12.81624573.xlsx | timestamp: 16:26:44 [config_logging.py:71]
+[SISTEMA_CARTERA] [INFO] [MODELO_DEUDA] [FINALIZADO] archivo_salida: MODELO_DEUDA_20260217_162644.xlsx | timestamp: 16:26:58 [config_logging.py:71]

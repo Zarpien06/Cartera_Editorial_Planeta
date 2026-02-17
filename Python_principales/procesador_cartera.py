@@ -244,7 +244,30 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
         warning(f"{fechas_invalidas_vto} registros con FECHA VTO inválida")
     
     info("✓ Fechas parseadas")
+    
+    # -------------------------
+    # 7.1 FILTRAR REGISTROS MAYORES A FECHA DE CIERRE
+    # -------------------------
+    fecha_cierre = pd.to_datetime(fecha_cierre_str)
+    
+    registros_antes_filtro = len(df)
+    
+    # Solo eliminar facturas emitidas después del cierre
+    df = df[df["FECHA_TEMP"] <= fecha_cierre]
+    
+    registros_despues_filtro = len(df)
+    registros_filtrados = registros_antes_filtro - registros_despues_filtro
+    
+    if registros_filtrados > 0:
+        info(f"✓ Eliminados {registros_filtrados} registros con FECHA posterior al cierre")
 
+
+    # Conteo de registros por mes antes de filtrar
+    df["MES_FECHA"] = df["FECHA_TEMP"].dt.to_period("M")
+    resumen_mes = df.groupby("MES_FECHA").size()
+    info(f"📊 Registros por mes antes de filtrar:\n{resumen_mes}")
+
+    
     # -------------------------
     # 8. CREAR TRES COLUMNAS PARA ABRIR FECHAS DE VENCIMIENTO
     # -------------------------
@@ -256,7 +279,6 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     # -------------------------
     # 9. CALCULAR DÍAS VENCIDOS
     # -------------------------
-    fecha_cierre = pd.to_datetime(fecha_cierre_str)
     df["DIAS VENCIDO"] = (fecha_cierre - df["FECHA VTO_TEMP"]).dt.days
     # Los días negativos significan que aún no vencen
     df["DIAS VENCIDO"] = df["DIAS VENCIDO"].apply(lambda x: x if x > 0 else 0)
@@ -380,15 +402,25 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     df["MAYOR 90 DIAS POR VENCER"] = df["SALDO"].where(df["DIAS POR VENCER"] >= 90, 0)
 
     # -------------------------
-    # 20. CALCULAR TOTAL POR VENCER
+    # 20. DIVISIÓN CONTABLE EXACTA DEL SALDO
     # -------------------------
-    df["TOTAL POR VENCER"] = df["SALDO"].where(df["DIAS POR VENCER"] > 0, 0)
     
-    # VALIDACIÓN 1: Mora Total + Total Por Vencer = Saldo
+    df["SALDO"] = df["SALDO"].round(2)
+    
+    # Mora
+    df["MORA TOTAL"] = df["SALDO"].where(df["DIAS VENCIDO"] > 0, 0)
+    
+    # Por vencer = lo que no es mora
+    df["TOTAL POR VENCER"] = (df["SALDO"] - df["MORA TOTAL"]).round(2)
+    
+    # Validación
     df["VALIDACION_MORA_VENCER"] = (
-        (df["MORA TOTAL"] + df["TOTAL POR VENCER"]).round(2) == df["SALDO"].round(2)
+        (df["MORA TOTAL"] + df["TOTAL POR VENCER"]).round(2)
+        == df["SALDO"]
     )
-    info("✓ Validación Mora + Por Vencer realizada")
+    
+    info("✓ Validación Mora + Por Vencer realizada (modo contable exacto)")
+
 
     # -------------------------
     # 21. RANGOS DE VENCIMIENTO (columnas principales del reporte)
