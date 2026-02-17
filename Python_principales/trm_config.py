@@ -5,6 +5,9 @@ import time
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Tuple, Optional
+import requests
+from datetime import date
+
 
 # Configuración de rutas
 BASE_DIR = Path(__file__).parent.absolute()
@@ -47,41 +50,113 @@ def _ensure_trm_file_exists() -> None:
             logger.error(f"Error al crear archivo TRM: {e}", exc_info=True)
             raise
 
+def obtener_trm_oficial():
+    """
+    Consulta la TRM oficial desde datos.gov.co
+    """
+    try:
+        url = "https://www.datos.gov.co/resource/mcec-87by.json?$limit=1&$order=vigenciadesde DESC"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+
+        data = response.json()
+
+        if not data:
+            raise Exception("No se recibió información de TRM")
+
+        trm_valor = float(data[0]["valor"])
+        fecha_vigencia = data[0]["vigenciadesde"]
+
+        logger.info(f"TRM oficial obtenida: {trm_valor}")
+
+        return trm_valor, fecha_vigencia
+
+    except Exception as e:
+        logger.error(f"Error obteniendo TRM oficial: {e}")
+        return None, None
+
+def actualizar_trm_automatica():
+    """
+    Actualiza automáticamente la TRM desde fuente oficial.
+    """
+    trm_valor, fecha_vigencia = obtener_trm_oficial()
+
+    if trm_valor:
+        try:
+            # Solo manejamos USD oficial (TRM es USD/COP)
+            save_trm(trm_valor, get_trm_eur(), actualizado_por="api_oficial")
+            logger.info("TRM actualizada automáticamente desde fuente oficial")
+            return True
+        except Exception as e:
+            logger.error(f"Error guardando TRM automática: {e}")
+            return False
+
+    return False
+
+def trm_es_de_hoy(fecha_str):
+    try:
+        fecha_guardada = datetime.strptime(fecha_str[:10], "%Y-%m-%d").date()
+        return fecha_guardada == date.today()
+    except:
+        return False
+
 def load_trm() -> Dict[str, Any]:
     """
     Carga los valores de TRM desde el archivo JSON.
     
     Returns:
-        Dict con las claves: usd, eur, fecha, actualizado_por, origen
+        Dict con las claves: usd, eur, fecha, actualizado_por, origen, version
     """
     max_attempts = 3
     attempt = 0
-    
+
     while attempt < max_attempts:
         try:
+            attempt += 1
             _ensure_trm_file_exists()
-            
-            # Limpiar caché del sistema de archivos
-            if hasattr(os, 'stat'):
-                try:
-                    os.stat(str(TRM_FILE))
-                except:
-                    pass
-            
+
+            # Forzar refresco del sistema de archivos
+            try:
+                os.stat(str(TRM_FILE))
+            except Exception:
+                pass
+
+            # Leer archivo
             with open(TRM_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            
-            # Validar y normalizar datos
+
+            # Validar estructura base
             if not isinstance(data, dict):
                 raise ValueError("Formato de archivo TRM inválido: no es un objeto JSON")
-                
-            # Validar campos numéricos
+
+            # 🔥 ACTUALIZACIÓN AUTOMÁTICA SI NO ES DE HOY
+            if not trm_es_de_hoy(data.get("fecha", "")):
+                logger.info("TRM no es del día actual. Actualizando automáticamente...")
+
+                trm_oficial, fecha_vigencia = obtener_trm_oficial()
+
+                if trm_oficial:
+                    data.update({
+                        "usd": float(trm_oficial),
+                        "fecha": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        "actualizado_por": "api_oficial",
+                        "origen": "api",
+                        "version": data.get("version", "1.0")
+                    })
+
+                    # Guardar actualización inmediatamente
+                    with open(TRM_FILE, 'w', encoding='utf-8') as fw:
+                        json.dump(data, fw, indent=2, ensure_ascii=False)
+
+                    logger.info("TRM actualizada y guardada correctamente")
+
+            # Validar y normalizar datos
             usd = float(data.get('usd', 4000.0))
             eur = float(data.get('eur', 4500.0))
-            
+
             if usd <= 0 or eur <= 0:
                 raise ValueError("Valores de TRM deben ser mayores a cero")
-            
+
             result = {
                 'usd': usd,
                 'eur': eur,
@@ -90,13 +165,14 @@ def load_trm() -> Dict[str, Any]:
                 'origen': data.get('origen', 'json'),
                 'version': data.get('version', '1.0')
             }
-            
+
             logger.debug(f"TRM cargada exitosamente: {result}")
             return result
-            
+
         except json.JSONDecodeError as e:
-            logger.warning(f"Error de decodificación JSON (intento {attempt + 1}/{max_attempts}): {e}")
-            # Si el archivo está corrupto, intentar repararlo
+            logger.warning(f"Error de decodificación JSON (intento {attempt}/{max_attempts}): {e}")
+
+            # Respaldar archivo corrupto
             if TRM_FILE.exists():
                 backup_file = TRM_FILE.with_suffix(f'.corrupt.{int(time.time())}.json')
                 try:
@@ -104,23 +180,29 @@ def load_trm() -> Dict[str, Any]:
                     logger.warning(f"Archivo TRM corrupto respaldado en {backup_file}")
                 except Exception as backup_err:
                     logger.error(f"Error al respaldar archivo TRM corrupto: {backup_err}")
-            time.sleep(0.1)  # Pequeña pausa entre intentos
+
+            time.sleep(0.1)
             continue
-            
+
         except Exception as e:
-            print(f"Error inesperado al cargar TRM: {e}")
-            if attempt == max_attempts - 1:  # Último intento
+            logger.error(f"Error inesperado al cargar TRM (intento {attempt}/{max_attempts}): {e}")
+
+            if attempt >= max_attempts:
                 break
-            time.sleep(0.1)  # Pequeña pausa entre intentos
+
+            time.sleep(0.1)
             continue
-    
-    # Si llegamos aquí, todos los intentos fallaron
+
+    # 🔥 FALLBACK SEGURO
+    logger.critical("Todos los intentos de carga TRM fallaron. Usando valores por defecto.")
+
     return {
         'usd': 4000.0,
         'eur': 4500.0,
         'fecha': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'actualizado_por': 'sistema',
-        'origen': 'error'
+        'actualizado_por': 'sistema_fallback',
+        'origen': 'error',
+        'version': '1.0'
     }
 
 def save_trm(usd, eur, actualizado_por='sistema'):
