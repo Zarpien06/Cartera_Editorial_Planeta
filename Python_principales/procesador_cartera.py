@@ -269,26 +269,44 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     # Los días negativos significan que ya vencieron
     df["DIAS POR VENCER"] = df["DIAS POR VENCER"].apply(lambda x: x if x > 0 else 0)
     info("✓ Días por vencer calculados")
-
+     
     # -------------------------
     # 11. CALCULAR SALDO VENCIDO
     # -------------------------
     df["SALDO VENCIDO"] = df["SALDO"].where(df["DIAS VENCIDO"] > 0, 0)
     info("✓ Saldo vencido calculado")
 
+     # -------------------------
+     # 12. REORDENAR COLUMNAS
+     # -------------------------
+    columnas = list(df.columns)
+     
+    if "SALDO VENCIDO" in columnas:
+         columnas.remove("VALOR")
+         columnas.remove("SALDO")
+     
+         idx = columnas.index("SALDO VENCIDO")
+     
+         columnas.insert(idx, "SALDO")
+         columnas.insert(idx, "VALOR")
+     
+    df = df[columnas]
+     
+    info("✓ Columnas reordenadas correctamente")
+     
     # -------------------------
-    # 12. CALCULAR % DOTACIÓN (100% si días vencidos >= 180)
+    # 13. CALCULAR % DOTACIÓN (100% si días vencidos >= 180)
     # -------------------------
     df["% DOTACION"] = df["DIAS VENCIDO"].apply(lambda x: 1.0 if x >= 180 else 0.0)
     
     # -------------------------
-    # 13. CALCULAR VALOR DOTACIÓN (saldo si días >= 180)
+    # 14. CALCULAR VALOR DOTACIÓN (saldo si días >= 180)
     # -------------------------
     df["VALOR DOTACION"] = df["SALDO"].where(df["DIAS VENCIDO"] >= 180, 0)
     info("✓ % Dotación y Valor Dotación calculados")
 
     # -------------------------
-    # 14. COLUMNAS DE LOS ÚLTIMOS 6 MESES VENCIDOS
+    # 15. COLUMNAS DE LOS ÚLTIMOS 6 MESES VENCIDOS
     # -------------------------
     mes_cierre = fecha_cierre.month
     anio_cierre = fecha_cierre.year
@@ -319,17 +337,17 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     info("✓ Columnas de últimos 6 meses vencidos creadas")
 
     # -------------------------
-    # 15. VALOR >= 180 DÍAS VENCIDOS
+    # 16. VALOR >= 180 DÍAS VENCIDOS
     # -------------------------
     df["VALOR >= 180 DIAS"] = df["SALDO"].where(df["DIAS VENCIDO"] >= 180, 0)
 
     # -------------------------
-    # 16. CALCULAR MORA TOTAL
+    # 17. CALCULAR MORA TOTAL
     # -------------------------
     df["MORA TOTAL"] = df["SALDO VENCIDO"]
 
     # -------------------------
-    # 17. COLUMNAS POR VENCER - PRÓXIMOS 3 MESES
+    # 18. COLUMNAS POR VENCER - PRÓXIMOS 3 MESES
     # -------------------------
     meses_adelante = []
     for i in range(1, 4):
@@ -357,12 +375,12 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     info("✓ Columnas de próximos 3 meses por vencer creadas")
 
     # -------------------------
-    # 18. CALCULAR VALOR MAYOR A 90 DÍAS POR VENCER
+    # 19. CALCULAR VALOR MAYOR A 90 DÍAS POR VENCER
     # -------------------------
     df["MAYOR 90 DIAS POR VENCER"] = df["SALDO"].where(df["DIAS POR VENCER"] >= 90, 0)
 
     # -------------------------
-    # 19. CALCULAR TOTAL POR VENCER
+    # 20. CALCULAR TOTAL POR VENCER
     # -------------------------
     df["TOTAL POR VENCER"] = df["SALDO"].where(df["DIAS POR VENCER"] > 0, 0)
     
@@ -373,7 +391,7 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     info("✓ Validación Mora + Por Vencer realizada")
 
     # -------------------------
-    # 20. RANGOS DE VENCIMIENTO (columnas principales del reporte)
+    # 21. RANGOS DE VENCIMIENTO (columnas principales del reporte)
     # -------------------------
     # Saldo no vencido: días vencidos de 0 a 29
     df["SALDO NO VENCIDO"] = df["SALDO"].where(df["DIAS VENCIDO"].between(0, 29), 0)
@@ -417,7 +435,7 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     info("✓ Validación de rangos realizada")
 
     # -------------------------
-    # 21. DEUDA INCOBRABLE = VALOR DOTACIÓN
+    # 22. DEUDA INCOBRABLE = VALOR DOTACIÓN
     # -------------------------
     df["DEUDA INCOBRABLE"] = df["VALOR DOTACION"]
 
