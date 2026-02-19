@@ -1276,3 +1276,5 @@ Archivo generado: C:\wamp64\www\cartera_v3.0.0\Python_principales\salidas\CARTER
 [SISTEMA_CARTERA] [ERROR] [MODELO_DEUDA] [ERROR] NAN/INF not supported in write_number() without 'nan_inf_to_errors' Workbook() option [config_logging.py:104]
 [SISTEMA_CARTERA] [INFO] [MODELO_DEUDA] [INICIO] archivo: C:\wamp64\www\cartera_v3.0.0\front_php\uploads\CARTERA_20260217_135651_6995dd66bc1c20.60455396.xlsx + C:\wamp64\www\cartera_v3.0.0\front_php\uploads\ANTICIPOS_FEBRERO_2026_6995dd66bcfc40.66949141.xlsx | timestamp: 10:40:24 [config_logging.py:71]
 [SISTEMA_CARTERA] [INFO] [MODELO_DEUDA] [FINALIZADO] archivo_salida: MODELO_DEUDA_20260218_104024.xlsx | timestamp: 10:40:34 [config_logging.py:71]
+[SISTEMA_CARTERA] [INFO] [MODELO_DEUDA] [INICIO] archivo: C:\wamp64\www\cartera_v3.0.0\front_php\uploads\CARTERA_20260219_105900_69975cc1cb5184.54485347.xlsx + C:\wamp64\www\cartera_v3.0.0\front_php\uploads\ANTICIPOS_FEBRERO_2026_69975cc1cbcd31.49163989.xlsx | timestamp: 13:56:03 [config_logging.py:71]
+[SISTEMA_CARTERA] [INFO] [MODELO_DEUDA] [FINALIZADO] archivo_salida: MODELO_DEUDA_20260219_135603.xlsx | timestamp: 13:56:11 [config_logging.py:71]

@@ -4,7 +4,6 @@ Procesador de Cartera PROVCA
 Procesa archivos CSV de cartera cumpliendo con el formato establecido.
 
 """
-
 import os
 import sys
 import pandas as pd
@@ -224,7 +223,6 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     else:
         info("✓ No se encontraron registros de ACTIVIDAD 80")
     
-
     # -------------------------
     # 5. UNIFICAR NOMBRES EN DENOMINACION COMERCIAL
     # Copiar NOMBRE a DENOMINACION COMERCIAL cuando esté vacía
@@ -274,13 +272,11 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     if registros_filtrados > 0:
         info(f"✓ Eliminados {registros_filtrados} registros con FECHA posterior al cierre")
 
-
     # Conteo de registros por mes antes de filtrar
     df["MES_FECHA"] = df["FECHA_TEMP"].dt.to_period("M")
     resumen_mes = df.groupby("MES_FECHA").size()
     info(f"📊 Registros por mes antes de filtrar:\n{resumen_mes}")
 
-    
     # -------------------------
     # 8. CREAR TRES COLUMNAS PARA ABRIR FECHAS DE VENCIMIENTO
     # -------------------------
@@ -662,7 +658,6 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     
     info("✓ Tabla tipo dinámica creada por ACTIVIDAD")
     
-    
     # -------------------------
     # EXPORTAR EXCEL CON FORMATO USANDO XlsxWriter
     # -------------------------
@@ -860,7 +855,6 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     info(f"✓ Deuda incobrable: ${df['DEUDA INCOBRABLE'].sum():,.2f}")
     
     return output_path
-
 
 # ---------------------
 # Main
