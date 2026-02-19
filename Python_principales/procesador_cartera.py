@@ -211,7 +211,19 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
         info(f"✓ Eliminados {registros_eliminados} registros de PL30")
     else:
         warning("⚠️  No se encontraron registros PL30 para eliminar")
-        warning("    Verificar que el CSV tenga registros con EMPRESA='PL' y ACTIVIDAD='30'")
+        warning("    Verificar que el CSV tenga registros con EMPRESA='PL' y ACTIVIDAD='30'")    
+        
+    # -----------------------------------------
+    # ELIMINAR ACTIVIDAD 80 COMPLETAMENTE
+    # -----------------------------------------
+    reg_80 = len(df[df["ACTIVIDAD"] == "80"])
+    
+    if reg_80 > 0:
+        df = df[df["ACTIVIDAD"] != "80"]
+        info(f"✓ Eliminados {reg_80} registros de ACTIVIDAD 80")
+    else:
+        info("✓ No se encontraron registros de ACTIVIDAD 80")
+    
 
     # -------------------------
     # 5. UNIFICAR NOMBRES EN DENOMINACION COMERCIAL
@@ -249,7 +261,8 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     # 7.1 FILTRAR REGISTROS MAYORES A FECHA DE CIERRE
     # -------------------------
     fecha_cierre = pd.to_datetime(fecha_cierre_str)
-    
+    info(f"Fecha de cierre REAL usada en cálculos: {fecha_cierre}")
+
     registros_antes_filtro = len(df)
     
     # Solo eliminar facturas emitidas después del cierre
@@ -295,9 +308,26 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     # -------------------------
     # 11. CALCULAR SALDO VENCIDO
     # -------------------------
-    df["SALDO VENCIDO"] = df["SALDO"].where(df["DIAS VENCIDO"] > 0, 0)
+    df["SALDO VENCIDO"] = df["SALDO"].where(df["FECHA VTO_TEMP"] <= fecha_cierre, 0)
     info("✓ Saldo vencido calculado")
 
+    print("\n===== DEBUG FECHAS ACTIVIDAD 18 =====")
+
+    df_18 = df[df["ACTIVIDAD"] == "18"]
+    
+    print("Facturas con VTO = fecha cierre:")
+    print(
+        df_18[df_18["FECHA VTO_TEMP"] == fecha_cierre][
+            ["NUMERO FACTURA", "FECHA VTO", "SALDO"]
+        ]
+    )
+    
+    print("\nTotal saldo con VTO igual a cierre:")
+    print(
+        df_18[df_18["FECHA VTO_TEMP"] == fecha_cierre]["SALDO"].sum()
+    )
+    
+     
      # -------------------------
      # 12. REORDENAR COLUMNAS
      # -------------------------
@@ -400,27 +430,48 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     # 19. CALCULAR VALOR MAYOR A 90 DÍAS POR VENCER
     # -------------------------
     df["MAYOR 90 DIAS POR VENCER"] = df["SALDO"].where(df["DIAS POR VENCER"] >= 90, 0)
+    
+    print(df.columns)
 
     # -------------------------
-    # 20. DIVISIÓN CONTABLE EXACTA DEL SALDO
+    # 20. DIVISIÓN CONTABLE EXACTA DEL SALDO (CORRECTO)
     # -------------------------
     
+    # Redondear base
     df["SALDO"] = df["SALDO"].round(2)
     
-    # Mora
-    df["MORA TOTAL"] = df["SALDO"].where(df["DIAS VENCIDO"] > 0, 0)
+    # MORA REAL = lo que realmente está vencido
+    df["MORA TOTAL"] = df["SALDO VENCIDO"].round(2)
     
-    # Por vencer = lo que no es mora
-    df["TOTAL POR VENCER"] = (df["SALDO"] - df["MORA TOTAL"]).round(2)
+    # POR VENCER = lo que no está vencido
+    df["TOTAL POR VENCER"] = (
+        df["SALDO"] - df["MORA TOTAL"]
+    ).round(2)
     
-    # Validación
+    # Diferencia técnica por redondeo
+    df["DIFERENCIA_REAL"] = (
+        df["SALDO"] - (df["MORA TOTAL"] + df["TOTAL POR VENCER"])
+    ).round(4)
+    
+    # Validación tolerante a centavos
     df["VALIDACION_MORA_VENCER"] = (
-        (df["MORA TOTAL"] + df["TOTAL POR VENCER"]).round(2)
-        == df["SALDO"]
+        df["DIFERENCIA_REAL"].abs() < 0.01
     )
     
-    info("✓ Validación Mora + Por Vencer realizada (modo contable exacto)")
-
+    # -------------------------
+    # REPORTE DEBUG GLOBAL
+    # -------------------------
+    
+    total_saldo = df["SALDO"].sum().round(2)
+    total_mora = df["MORA TOTAL"].sum().round(2)
+    total_vencer = df["TOTAL POR VENCER"].sum().round(2)
+    
+    info("===== VALIDACIÓN CONTABLE =====")
+    info(f"SALDO TOTAL: {total_saldo}")
+    info(f"MORA TOTAL: {total_mora}")
+    info(f"POR VENCER TOTAL: {total_vencer}")
+    info(f"SUMA MORA+VENCER: {(total_mora + total_vencer).round(2)}")
+    info(f"DIFERENCIA GLOBAL: {(total_saldo - (total_mora + total_vencer)).round(4)}")
 
     # -------------------------
     # 21. RANGOS DE VENCIMIENTO (columnas principales del reporte)
@@ -573,36 +624,113 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     if output_path is None:
         fecha_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = os.path.join(OUT_DIR, f"CARTERA_{fecha_str}.xlsx")
-
+     
     # -------------------------
-    # EXPORTAR EXCEL CON FORMATO MEJORADO
+    # TABLA TIPO DINÁMICA POR ACTIVIDAD
+    # -------------------------
+    
+    tabla_dinamica = (
+        df.groupby("ACTIVIDAD", dropna=False)
+          .agg({
+              "SALDO": "sum",
+              "TOTAL POR VENCER": "sum",
+              "MORA TOTAL": "sum",
+              "VALOR DOTACION": "sum"
+          })
+          .reset_index()
+    )
+    
+    # Renombrar columnas para que se vean como en tu imagen
+    tabla_dinamica.columns = [
+        "Etiquetas de fila",
+        "Suma de SALDO",
+        "Suma de TOTAL POR VENCER",
+        "Suma de MORA TOTAL",
+        "Suma de VALOR DOTACION"
+    ]
+    
+    # Agregar fila Total general
+    total_general = pd.DataFrame({
+        "Etiquetas de fila": ["Total general"],
+        "Suma de SALDO": [tabla_dinamica["Suma de SALDO"].sum()],
+        "Suma de TOTAL POR VENCER": [tabla_dinamica["Suma de TOTAL POR VENCER"].sum()],
+        "Suma de MORA TOTAL": [tabla_dinamica["Suma de MORA TOTAL"].sum()],
+        "Suma de VALOR DOTACION": [tabla_dinamica["Suma de VALOR DOTACION"].sum()],
+    })
+    
+    tabla_dinamica = pd.concat([tabla_dinamica, total_general], ignore_index=True)
+    
+    info("✓ Tabla tipo dinámica creada por ACTIVIDAD")
+    
+    
+    # -------------------------
+    # EXPORTAR EXCEL CON FORMATO USANDO XlsxWriter
     # -------------------------
     info("\n=== GENERANDO ARCHIVO EXCEL ===")
     
     with pd.ExcelWriter(output_path, engine="xlsxwriter") as writer:
 
-        # Hoja principal con detalle
+        # =========================
+        # Exportar hojas
+        # =========================
         df.to_excel(writer, index=False, sheet_name="DETALLE")
-        
-        # Hoja de resumen
         resumen.to_excel(writer, index=False, sheet_name="RESUMEN")
-        
-        # Hoja de validaciones
         validaciones.to_excel(writer, index=False, sheet_name="VALIDACIONES")
-        
-        # Hoja de registros con problemas en Mora+Vencer (si existen)
+    
         if len(registros_mora_vencer_invalidos) > 0:
             registros_mora_vencer_invalidos.to_excel(writer, index=False, sheet_name="ERROR_MORA_VENCER")
-        
-        # Hoja de registros con problemas en Rangos (si existen)
+    
         if len(registros_rangos_invalidos) > 0:
             registros_rangos_invalidos.to_excel(writer, index=False, sheet_name="ERROR_RANGOS")
-
-        workbook  = writer.book
+    
+        tabla_dinamica.to_excel(writer, index=False, sheet_name="TABLA_DINAMICA")
+    
+        # =========================
+        # Obtener workbook
+        # =========================
+        workbook = writer.book
+    
+        # =========================
+        # Crear formatos (ANTES DE USARLOS)
+        # =========================
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': "#123269",
+            'font_color': 'white',
+            'align': 'center',
+            'valign': 'vcenter',
+            'border': 1,
+            'text_wrap': True
+        })
+    
+        text_format = workbook.add_format({
+            'align': 'left'
+        })
+    
+        number_format = workbook.add_format({
+            'num_format': '#,##0.00',
+            'align': 'right'
+        })
+    
+        # =========================
+        # Obtener worksheets
+        # =========================
         worksheet_detalle = writer.sheets["DETALLE"]
         worksheet_resumen = writer.sheets["RESUMEN"]
         worksheet_validaciones = writer.sheets["VALIDACIONES"]
-        
+        worksheet_dinamica = writer.sheets["TABLA_DINAMICA"]
+    
+        # =========================
+        # Formato hoja dinámica
+        # =========================
+        worksheet_dinamica.set_column(0, 0, 20, text_format)
+        worksheet_dinamica.set_column(1, 4, 25, number_format)
+    
+        for col_num, value in enumerate(tabla_dinamica.columns.values):
+            worksheet_dinamica.write(0, col_num, value, header_format)
+    
+        worksheet_dinamica.set_row(0, 30)
+          
         # Formatos mejorados
         date_format = workbook.add_format({
             'num_format': 'dd/mm/yyyy',
@@ -739,41 +867,38 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
 # ---------------------
 def main():
     try:
-        input_path = None
-        output_path = None
+        if len(sys.argv) < 2:
+            raise ValueError("Debe indicar el archivo de entrada")
+
+        input_path = sys.argv[1]
         fecha_cierre = None
+        output_path = None
 
-        if len(sys.argv) > 1:
-            input_path = sys.argv[1]
-
-        if len(sys.argv) > 2:
-            arg2 = sys.argv[2]
-            # Si el segundo argumento es una fecha (YYYY-MM-DD)
+        # Si envían fecha
+        if len(sys.argv) >= 3:
             try:
-                pd.to_datetime(arg2, format="%Y-%m-%d")
-                fecha_cierre = arg2
+                pd.to_datetime(sys.argv[2], format="%Y-%m-%d")
+                fecha_cierre = sys.argv[2]
             except:
-                output_path = arg2
+                raise ValueError("La fecha debe tener formato YYYY-MM-DD")
 
-        if len(sys.argv) > 3:
-            fecha_cierre = sys.argv[3]
-
-        if not input_path:
-            raise ValueError("No se recibió archivo de entrada")
+        # Si envían nombre de archivo de salida
+        if len(sys.argv) >= 4:
+            output_path = sys.argv[3]
 
         resultado = procesar_cartera(input_path, output_path, fecha_cierre)
 
         info(f"\n{'='*60}")
-        info(f"PROCESO COMPLETADO EXITOSAMENTE")
+        info("PROCESO COMPLETADO EXITOSAMENTE")
         info(f"{'='*60}")
         info(f"Archivo: {resultado}")
 
     except Exception as e:
         logging.error(f"Error: {str(e)}", exc_info=True)
         print(f"\n{'='*60}")
-        print(f"ERROR EN EL PROCESO")
+        print("ERROR EN EL PROCESO")
         print(f"{'='*60}")
-        print(f"{str(e)}")
+        print(str(e))
         sys.exit(1)
 
 if __name__ == "__main__":

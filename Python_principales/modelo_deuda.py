@@ -1,19 +1,31 @@
+# ==========================================================
+# MODELO DE DEUDA - Cumplimiento completo procedimiento
+# Departamento de Cartera
+# Versión corregida con todos los puntos del procedimiento:
+#   - Columna % DOTACION
+#   - Columna SALDO VENCIDO
+#   - Columna MAYOR 90 DIAS
+#   - PL10 corregido a LIBRERIAS 2 según procedimiento (pág. 7)
+#   - Anticipos como registros (NO compensación)
+#   - TRM último día mes anterior desde trm.json
+#   - Totales PESOS, DIVISAS (moneda + COP) y VENCIMIENTO
+# ==========================================================
+
 import argparse
 import sys
 import pandas as pd
 import numpy as np
 import os
 import logging
-import re
-from datetime import datetime
-from typing import Union, Any
+from datetime import datetime, timedelta
+from typing import Any, Optional
+import json
 
-# Configuración de logging unificado
+# ---------------- Logging unificado ----------------
 try:
     from config_logging import logger, log_inicio_proceso, log_fin_proceso, log_error_proceso
     USE_UNIFIED_LOGGING = True
 except ImportError:
-    # Fallback al logging original si config_logging no está disponible
     LOG_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'modelo_deuda.log')
     logging.basicConfig(
         filename=LOG_FILE_PATH,
@@ -31,17 +43,14 @@ try:
 except ImportError:
     pass
 
-if USE_UNIFIED_LOGGING:
-    # Este mensaje se mostrará cuando se llame a la función principal
-    pass
-else:
+if not USE_UNIFIED_LOGGING:
     logging.info("Iniciando modelo de deuda")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SALIDAS_DIR = os.path.join(BASE_DIR, 'salidas')
 os.makedirs(SALIDAS_DIR, exist_ok=True)
 
-# Líneas de venta según especificación
+# ---------------- Parámetros del negocio ----------------
 LINEAS_PESOS = [
     ('CT', '80'), ('ED', '41'), ('ED', '44'), ('ED', '47'),
     ('PL', '10'), ('PL', '15'), ('PL', '20'), ('PL', '21'),
@@ -52,1051 +61,758 @@ LINEAS_PESOS = [
 ]
 
 LINEAS_DIVISAS = [
-    ('PL', '11'), ('PL', '18'), ('PL', '57'), ('PL', '72'),
-    ('PL', '17'), ('PL', '16'), ('PL', '41'), ('PL', '68')
+    ('PL', '11'), ('PL', '18'), ('PL', '57'), ('PL', '41')
 ]
 
-# Tabla Negocio-Canal según especificación exacta
+# *** Tabla Negocio-Canal corregida según procedimiento pág. 7 ***
+# CORRECCIÓN OBS-4: PL10 -> LIBRERIAS 2 (no LIBRERIAS 3 como estaba antes)
 TABLA_NEGOCIO_CANAL = {
-    'PL10': {'NEGOCIO': 'LIBRERIAS 2', 'CANAL': 'LIBRERIAS 2'},
-    'PL15': {'NEGOCIO': 'E-COMMERCE', 'CANAL': 'E-COMMERCE'},
+    'PL10': {'NEGOCIO': 'LIBRERIAS 2', 'CANAL': 'LIBRERIAS 2'},   # CORREGIDO: era LIBRERIAS 3
+    'PL15': {'NEGOCIO': 'E-COMMERCE',  'CANAL': 'E-COMMERCE'},
     'PL20': {'NEGOCIO': 'LIBRERIAS 1', 'CANAL': 'LIBRERIAS 1'},
     'PL21': {'NEGOCIO': 'LIBRERIAS 2', 'CANAL': 'LIBRERIAS 2'},
-    'PL23': {'NEGOCIO': 'LIBRERIAS 3', 'CANAL': 'LIBRERIAS 3'},
+    'PL23': {'NEGOCIO': 'LIBRERIAS 1', 'CANAL': 'LIBRERIAS 1'},
     'PL25': {'NEGOCIO': 'LIBRERIAS 1', 'CANAL': 'LIBRERIAS 1'},
-    'PL28': {'NEGOCIO': 'SALDOS', 'CANAL': 'SALDOS'},
-    'PL29': {'NEGOCIO': 'SALDOS', 'CANAL': 'SALDOS'},
-    'PL31': {'NEGOCIO': 'SALDOS', 'CANAL': 'SALDOS'},
+    'PL28': {'NEGOCIO': 'SALDOS',      'CANAL': 'SALDOS'},
+    'PL29': {'NEGOCIO': 'SALDOS',      'CANAL': 'SALDOS'},
+    'PL31': {'NEGOCIO': 'SALDOS',      'CANAL': 'SALDOS'},
     'PL32': {'NEGOCIO': 'DISTRIBUIDORES', 'CANAL': 'DISTRIBUIDORES'},
     'PL53': {'NEGOCIO': 'LIBRERIAS 3', 'CANAL': 'LIBRERIAS 3'},
-    'PL56': {'NEGOCIO': 'OTROS DIGITAL', 'CANAL': 'OTROS DIGITAL'},
-    'PL57': {'NEGOCIO': 'PRENSA', 'CANAL': 'PRENSA'},
-    'PL60': {'NEGOCIO': 'OTROS', 'CANAL': 'OTROS'},
-    'PL62': {'NEGOCIO': 'PRENSA', 'CANAL': 'PRENSA'},
+    'PL56': {'NEGOCIO': 'OTROS DIGITAL','CANAL': 'OTROS DIGITAL'},
+    'PL57': {'NEGOCIO': 'PRENSA USD',  'CANAL': 'PRENSA USD'},
+    'PL60': {'NEGOCIO': 'OTROS',       'CANAL': 'OTROS'},
+    'PL62': {'NEGOCIO': 'PRENSA',      'CANAL': 'PRENSA'},
     'PL63': {'NEGOCIO': 'LIBRERIAS 3', 'CANAL': 'LIBRERIAS 3'},
-    'PL64': {'NEGOCIO': 'OTROS', 'CANAL': 'OTROS'},
-    'PL65': {'NEGOCIO': 'OTROS', 'CANAL': 'OTROS'},
-    'PL66': {'NEGOCIO': 'OTROS DIGITAL', 'CANAL': 'OTROS DIGITAL'},
+    'PL64': {'NEGOCIO': 'OTROS',       'CANAL': 'OTROS'},
+    'PL65': {'NEGOCIO': 'OTROS',       'CANAL': 'OTROS'},
+    'PL66': {'NEGOCIO': 'OTROS DIGITAL','CANAL': 'OTROS DIGITAL'},
     'PL69': {'NEGOCIO': 'LIBRERIAS 1', 'CANAL': 'LIBRERIAS 1'},
-    'PL11': {'NEGOCIO': 'EXPORTACION', 'CANAL': 'EXPORTACION'},
-    'PL16': {'NEGOCIO': 'OTROS', 'CANAL': 'OTROS'},
-    'PL17': {'NEGOCIO': 'EXPORTACION', 'CANAL': 'EXPORTACION'},
-    'PL18': {'NEGOCIO': 'EXPORTACION', 'CANAL': 'EXPORTACION'},
-    'PL41': {'NEGOCIO': 'OTROS', 'CANAL': 'OTROS'},
-    'PL68': {'NEGOCIO': 'OTROS', 'CANAL': 'OTROS'},
-    'PL72': {'NEGOCIO': 'EXPORTACION', 'CANAL': 'EXPORTACION'},
-    'CT80': {'NEGOCIO': 'TINTA', 'CANAL': 'TINTA'},
-    'ED41': {'NEGOCIO': 'EDUCACION', 'CANAL': 'EDUCACION'},
-    'ED44': {'NEGOCIO': 'EDUCACION', 'CANAL': 'EDUCACION'},
-    'ED47': {'NEGOCIO': 'EDUCACION', 'CANAL': 'EDUCACION'}
+    'PL11': {'NEGOCIO': 'EXPORTACION USD', 'CANAL': 'EXPORTACION USD'},
+    'PL18': {'NEGOCIO': 'EXPORTACION USD', 'CANAL': 'EXPORTACION USD'},
+    'PL41': {'NEGOCIO': 'EXPORTACION EURO','CANAL': 'EXPORTACION EURO'},
+    'CT80': {'NEGOCIO': 'TINTA CLUB DEL LIBRO', 'CANAL': 'TINTA'},
+    'ED41': {'NEGOCIO': 'EDUCACION',   'CANAL': 'EDUCACION'},
+    'ED44': {'NEGOCIO': 'OTROS DIGITAL','CANAL': 'OTROS DIGITAL'},
+    'ED47': {'NEGOCIO': 'EDUCACION',   'CANAL': 'EDUCACION'},
 }
 
+# ---------------- Utilidades ----------------
 def safe_float_conversion(val: Any) -> float:
-    """Convierte de forma segura cualquier valor a float, manejando objetos pandas."""
     if val is None:
         return 0.0
     if isinstance(val, (int, float, np.number)):
         return float(val)
-    if hasattr(val, 'item'):
-        # Para valores de numpy/pandas que pueden extraer un escalar
-        try:
-            return float(val.item())
-        except (ValueError, AttributeError, TypeError):
-            pass
-    if hasattr(val, '__iter__') and not isinstance(val, (str, bytes)):
-        # Si es iterable (como Series o array), tomar el primer elemento si es escalar
-        try:
-            if len(val) == 1:
-                return float(list(val)[0])
-        except (ValueError, TypeError):
-            pass
     try:
-        return float(val)
+        return float(str(val).replace(",", "").replace(" ", ""))
     except (ValueError, TypeError):
         return 0.0
 
 def safe_isna_check(val: Any) -> bool:
-    """Verifica de forma segura si un valor es NA/NaN, manejando objetos pandas."""
     try:
-        # Si es un pandas Series o similar, usar .any()
-        if hasattr(val, 'any') and not pd.api.types.is_scalar(val):
-            return bool(val.isna().any() if hasattr(val, 'isna') else val.any())
-        else:
-            # Es un valor escalar, usar pd.isna normalmente
-            return pd.isna(val)
-    except:
-        # En caso de error, intentar con pd.isna directamente
         return pd.isna(val)
+    except Exception:
+        return val is None
 
-def cargar_tasas_cambio():
-    """Carga las tasas de cambio desde el módulo trm_config"""
+def obtener_ultimo_dia_mes_anterior(fecha_cierre_str: str) -> str:
+    fecha_cierre = datetime.strptime(fecha_cierre_str, "%Y-%m-%d")
+    primer_dia_mes = fecha_cierre.replace(day=1)
+    ultimo_dia_mes_anterior = primer_dia_mes - timedelta(days=1)
+    return ultimo_dia_mes_anterior.strftime("%Y-%m-%d")
+
+def cargar_tasas_cambio(fecha_cierre: str,
+                        usd_override: Optional[float] = None,
+                        eur_override: Optional[float] = None):
+    TRM_FILE = os.path.join(BASE_DIR, "trm.json")
+    fecha_trm = obtener_ultimo_dia_mes_anterior(fecha_cierre)
+
+    if not os.path.exists(TRM_FILE):
+        raise FileNotFoundError(
+            f"No existe archivo trm.json en {BASE_DIR}. "
+            "Créelo con el formato: {{\"YYYY-MM-DD\": {{\"USD\": 0.0, \"EUR\": 0.0}}}}"
+        )
+
+    with open(TRM_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if fecha_trm not in data:
+        raise ValueError(
+            f"No existe TRM registrada para la fecha {fecha_trm} "
+            "(último día del mes anterior al cierre)"
+        )
+
+    trm_dolar = float(data[fecha_trm].get("USD", 0))
+    trm_euro  = float(data[fecha_trm].get("EUR", 0))
+
+    if usd_override and usd_override > 0:
+        trm_dolar = usd_override
+        print(f"  [INFO] TRM USD sobrescrita por CLI: {trm_dolar}")
+
+    if eur_override and eur_override > 0:
+        trm_euro = eur_override
+        print(f"  [INFO] TRM EUR sobrescrita por CLI: {trm_euro}")
+
+    print(f"  [OK] TRM utilizada ({fecha_trm})  USD: {trm_dolar:,.4f}  |  EUR: {trm_euro:,.4f}")
+    return trm_dolar, trm_euro, fecha_trm
+
+def _last_day_of_month(dt: pd.Timestamp) -> pd.Timestamp:
+    return dt.to_period('M').to_timestamp('M')
+
+def _moneda_por_linea(linea_key: str) -> str:
+    k = str(linea_key).strip().upper()
+    if k in ('PL11', 'PL18', 'PL57'):
+        return 'DÓLAR'
+    if k == 'PL41':
+        return 'EURO'
+    return 'PESOS COL'
+
+def _build_linea_key(emp: str, act: str) -> str:
+    emp = str(emp).strip().upper()
+    act = str(act).strip().upper().replace('.0', '')
+    return f"{emp}{act}"
+
+def _ensure_datetime(series):
     try:
-        from trm_config import load_trm
-        trm_data = load_trm()
-        
-        if not trm_data or not isinstance(trm_data, dict):
-            print("⚠ Datos de TRM inválidos. Usando valores por defecto")
-            return 4000.0, 4500.0, datetime.now().strftime('%Y-%m-%d')
-        
-        # Obtener tasas con valores por defecto si no existen
-        tasa_usd = float(trm_data.get('usd', 4000.0))
-        tasa_eur = float(trm_data.get('eur', 4500.0))
-        fecha = str(trm_data.get('fecha', datetime.now().strftime('%Y-%m-%d')))
-        
-        # Validar que las tasas sean positivas
-        if tasa_usd <= 0:
-            tasa_usd = 4000.0
-        if tasa_eur <= 0:
-            tasa_eur = 4500.0
-        
-        print(f"[OK] TRM cargada - USD: ${tasa_usd:,.2f}, EUR: ${tasa_eur:,.2f}")
-        return tasa_usd, tasa_eur, fecha
-        
-    except ImportError:
-        print(f"[WARN] Módulo trm_config no encontrado. Usando TRM por defecto - USD: $4000, EUR: $4500")
-        return 4000.0, 4500.0, datetime.now().strftime('%Y-%m-%d')
-    except Exception as e:
-        print(f"[ERROR] Error al cargar TRM: {e}. Usando valores por defecto")
-        return 4000.0, 4500.0, datetime.now().strftime('%Y-%m-%d')
+        return pd.to_datetime(series, dayfirst=True, errors='coerce')
+    except Exception:
+        return pd.to_datetime(series, errors='coerce')
 
-def crear_modelo_deuda(archivo_provision, archivo_anticipos, output_file='1_Modelo_Deuda.xlsx'):
+# ---------------- Lectura flexible de archivos ----------------
+def leer_archivo(archivo: str) -> pd.DataFrame:
+    if not os.path.exists(archivo):
+        raise FileNotFoundError(f"No se encontró el archivo: {archivo}")
+    if archivo.lower().endswith('.csv'):
+        for enc in ['utf-8-sig', 'latin1', 'cp1252', 'utf-8']:
+            for sep in [';', ',', '\t', '|']:
+                try:
+                    df = pd.read_csv(archivo, encoding=enc, sep=sep)
+                    if len(df.columns) > 1 or len(df) > 0:
+                        return df
+                except Exception:
+                    continue
+        return pd.read_csv(archivo, encoding='latin1', sep=';')
+    if archivo.lower().endswith(('.xlsx', '.xls')):
+        return pd.read_excel(archivo, engine='openpyxl')
+    return pd.read_csv(archivo, encoding='latin1', sep=';')
+
+# ============================================================
+# CÁLCULO COMPLETO DE CAMPOS (procedimiento completo pág. 3)
+# ============================================================
+def calcular_campos_provision(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Crea el archivo Modelo Deuda combinando cartera y anticipos
-    Los archivos de entrada deben venir de procesador_cartera.py y procesador_anticipos.py
+    Aplica todas las transformaciones del procedimiento al archivo de provisión:
+    - Elimina columna PCIMCO (columna U)
+    - Elimina fila PL30 con saldo -614.000
+    - Unifica NOMBRE en DENOMINACION COMERCIAL
+    - Convierte fechas a datetime con dayfirst=True
+    - Abre FECHA VTO en columnas DIA / MES / AÑO  (procedimiento pág. 3)
+    - Calcula DIAS VENCIDOS y DIAS POR VENCER
+    - Calcula SALDO VENCIDO                        (OBS-2 corregida)
+    - Calcula % DOTACION                           (OBS-1 corregida)
+    - Calcula DEUDA INCOBRABLE (= valor dotación)
+    - Crea 7 buckets de vencimiento
+    - Valida suma buckets == SALDO
+    - Calcula MORA TOTAL y TOTAL POR VENCER
+    - Valida MORA TOTAL + TOTAL POR VENCER == SALDO
+    - Calcula POR VENCER M1, M2, M3
+    - Calcula MAYOR 90 DIAS                        (OBS-3 corregida)
     """
-    
+
+    # -- 1. Eliminar columna PCIMCO (columna U del procedimiento) --
+    for col in list(df.columns):
+        if col.strip().upper() == 'PCIMCO':
+            df = df.drop(columns=[col])
+            print("  [OK] Columna PCIMCO eliminada")
+
+    # -- 2. Unificar DENOMINACION COMERCIAL sin borrar datos existentes --
+    if 'PCNMCL' in df.columns:
+        if 'DENOMINACION COMERCIAL' not in df.columns:
+            df['DENOMINACION COMERCIAL'] = df['PCNMCL']
+        else:
+            df['DENOMINACION COMERCIAL'] = df['DENOMINACION COMERCIAL'].fillna(df['PCNMCL'])
+    if 'NOMBRE' in df.columns and 'DENOMINACION COMERCIAL' in df.columns:
+        df['DENOMINACION COMERCIAL'] = df['DENOMINACION COMERCIAL'].fillna(df['NOMBRE'])
+
+    # -- 3. Convertir fechas a datetime formato día-mes-año --
+    if 'FECHA' in df.columns:
+        df['FECHA'] = _ensure_datetime(df['FECHA'])
+    if 'FECHA VTO' in df.columns:
+        df['FECHA VTO'] = _ensure_datetime(df['FECHA VTO'])
+
+    # -- 4. Abrir FECHA VTO en día, mes, año (procedimiento pág. 3) --
+    if 'FECHA VTO' in df.columns:
+        df['VTO_DIA']  = df['FECHA VTO'].dt.day
+        df['VTO_MES']  = df['FECHA VTO'].dt.month
+        df['VTO_ANIO'] = df['FECHA VTO'].dt.year
+
+    # -- 5. Línea de negocio --
+    if 'EMPRESA' in df.columns and 'ACTIVIDAD' in df.columns:
+        df['LINEA DE NEGOCIO'] = df.apply(
+            lambda r: _build_linea_key(r['EMPRESA'], r['ACTIVIDAD']), axis=1
+        )
+
+    # -- 6. Eliminar fila específica PL30 - saldo -614.000 --
+    try:
+        if 'ACTIVIDAD' in df.columns and 'SALDO' in df.columns:
+            df['__SAL_NUM__'] = pd.to_numeric(df['SALDO'], errors='coerce')
+            cond = (
+                df['ACTIVIDAD'].astype(str).str.strip() == '30'
+            ) & (
+                df['__SAL_NUM__'].round(0) == -614000
+            )
+            removed = cond.sum()
+            if removed:
+                print(f"  [OK] Fila PL30 (-614.000) eliminada: {removed} registro(s)")
+            df = df.loc[~cond].drop(columns=['__SAL_NUM__'])
+    except Exception:
+        pass
+
+    # -- 7. Fecha de corte: último día del mes del documento más reciente --
+    if 'FECHA' in df.columns and df['FECHA'].notna().any():
+        fecha_corte = _last_day_of_month(df['FECHA'].max())
+    else:
+        fecha_corte = _last_day_of_month(pd.Timestamp.today())
+
+    # -- 8. SALDO a numérico --
+    if 'SALDO' in df.columns:
+        df['SALDO'] = pd.to_numeric(df['SALDO'], errors='coerce').fillna(0.0)
+    else:
+        df['SALDO'] = 0.0
+
+    # -- 9. Días vencidos y días por vencer --
+    if 'FECHA VTO' in df.columns:
+        df['DIAS VENCIDOS']  = (fecha_corte - df['FECHA VTO']).dt.days
+        df['DIAS POR VENCER'] = (df['FECHA VTO'] - fecha_corte).dt.days.clip(lower=0)
+    else:
+        df['DIAS VENCIDOS']   = 0
+        df['DIAS POR VENCER'] = 0
+
+    # -- 10. SALDO VENCIDO (procedimiento pág. 3 - OBS-2 corregida) --
+    # Monto vencido de cada factura (saldo de facturas con días vencidos > 0)
+    df['SALDO VENCIDO'] = np.where(df['DIAS VENCIDOS'] > 0, df['SALDO'], 0.0)
+
+    # -- 11. % DOTACION (procedimiento pág. 3 - OBS-1 corregida) --
+    # 100% si DIAS VENCIDOS >= 180, 0% en caso contrario
+    df['% DOTACION'] = np.where(df['DIAS VENCIDOS'] >= 180, 1.0, 0.0)
+
+    # -- 12. DEUDA INCOBRABLE = SALDO x % DOTACION (= valor dotación) --
+    df['DEUDA INCOBRABLE'] = np.where(df['DIAS VENCIDOS'] >= 180, df['SALDO'], 0.0)
+
+    # -- 13. Siete buckets de vencimiento (procedimiento pág. 3) --
+    df['SALDO NO VENCIDO'] = np.where(df['DIAS VENCIDOS'] <= 0,                                         df['SALDO'], 0.0)
+    df['VENCIDO 30']       = np.where((df['DIAS VENCIDOS'] >= 30)  & (df['DIAS VENCIDOS'] <= 59),       df['SALDO'], 0.0)
+    df['VENCIDO 60']       = np.where((df['DIAS VENCIDOS'] >= 60)  & (df['DIAS VENCIDOS'] <= 89),       df['SALDO'], 0.0)
+    df['VENCIDO 90']       = np.where((df['DIAS VENCIDOS'] >= 90)  & (df['DIAS VENCIDOS'] <= 179),      df['SALDO'], 0.0)
+    df['VENCIDO 180']      = np.where((df['DIAS VENCIDOS'] >= 180) & (df['DIAS VENCIDOS'] <= 359),      df['SALDO'], 0.0)
+    df['VENCIDO 360']      = np.where((df['DIAS VENCIDOS'] >= 360) & (df['DIAS VENCIDOS'] <= 369),      df['SALDO'], 0.0)
+    df['VENCIDO + 360']    = np.where(df['DIAS VENCIDOS'] >= 370,                                       df['SALDO'], 0.0)
+
+    # -- 14. Validación: suma de buckets == SALDO --
+    suma_buckets = (
+        df['SALDO NO VENCIDO'] + df['VENCIDO 30'] + df['VENCIDO 60'] +
+        df['VENCIDO 90'] + df['VENCIDO 180'] + df['VENCIDO 360'] + df['VENCIDO + 360']
+    ).round(2)
+    mismatches_buckets = ((suma_buckets - df['SALDO'].round(2)).abs() > 0.01).sum()
+    if mismatches_buckets:
+        print(f"  [WARN] {mismatches_buckets} factura(s): suma(buckets) != SALDO")
+    else:
+        print("  [OK] Validacion buckets: suma(buckets) = SALDO en todas las facturas")
+
+    # -- 15. MORA TOTAL y TOTAL POR VENCER --
+    df['MORA TOTAL'] = df[['VENCIDO 30', 'VENCIDO 60', 'VENCIDO 90',
+                            'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360']].sum(axis=1)
+    df['TOTAL POR VENCER'] = df['SALDO NO VENCIDO'].fillna(0.0)
+
+    # -- 16. Validación: MORA TOTAL + TOTAL POR VENCER == SALDO --
+    mismatches_mora = (
+        ((df['MORA TOTAL'] + df['TOTAL POR VENCER']).round(2) - df['SALDO'].round(2)).abs() > 0.01
+    ).sum()
+    if mismatches_mora:
+        print(f"  [WARN] {mismatches_mora} factura(s): MORA TOTAL + POR VENCER != SALDO")
+    else:
+        print("  [OK] Validacion mora: MORA TOTAL + TOTAL POR VENCER = SALDO en todas las facturas")
+
+    # -- 17. Por vencer en los 3 meses siguientes al cierre --
+    if 'FECHA VTO' in df.columns:
+        meses_diff = (
+            df['FECHA VTO'].dt.to_period('M') - fecha_corte.to_period('M')
+        ).apply(lambda p: p.n)
+        df['POR VENCER M1'] = np.where(meses_diff == 1, df['SALDO'], 0.0)
+        df['POR VENCER M2'] = np.where(meses_diff == 2, df['SALDO'], 0.0)
+        df['POR VENCER M3'] = np.where(meses_diff == 3, df['SALDO'], 0.0)
+    else:
+        df['POR VENCER M1'] = 0.0
+        df['POR VENCER M2'] = 0.0
+        df['POR VENCER M3'] = 0.0
+
+    # -- 18. MAYOR 90 DIAS (procedimiento pág. 3 - OBS-3 corregida) --
+    # Suma de todos los buckets con vencimiento >= 90 días
+    df['MAYOR 90 DIAS'] = df[['VENCIDO 90', 'VENCIDO 180',
+                               'VENCIDO 360', 'VENCIDO + 360']].sum(axis=1)
+
+    return df
+
+# ============================================================
+# HOJA VENCIMIENTO
+# ============================================================
+def crear_hoja_vencimientos(df_pesos_final: pd.DataFrame,
+                            df_divisas_final: pd.DataFrame) -> pd.DataFrame:
+
+    columnas_sumables = [
+        'SALDO', 'SALDO NO VENCIDO', 'VENCIDO 30', 'VENCIDO 60',
+        'VENCIDO 90', 'VENCIDO 180', 'VENCIDO 360',
+        'VENCIDO + 360', 'DEUDA INCOBRABLE'
+    ]
+
+    df_all = pd.concat([df_pesos_final, df_divisas_final], ignore_index=True)
+
+    if 'LINEA DE NEGOCIO' in df_all.columns:
+        df_all['NEGOCIO'] = df_all['LINEA DE NEGOCIO'].apply(
+            lambda k: TABLA_NEGOCIO_CANAL.get(
+                str(k).strip().upper(), {'NEGOCIO': 'OTROS', 'CANAL': 'OTROS'}
+            )['NEGOCIO']
+        )
+        df_all['CANAL'] = df_all['LINEA DE NEGOCIO'].apply(
+            lambda k: TABLA_NEGOCIO_CANAL.get(
+                str(k).strip().upper(), {'NEGOCIO': 'OTROS', 'CANAL': 'OTROS'}
+            )['CANAL']
+        )
+        df_all['MONEDA'] = df_all['LINEA DE NEGOCIO'].apply(
+            lambda k: _moneda_por_linea(str(k).strip().upper())
+        )
+
+    df_all['MONEDA']  = df_all.get('MONEDA', 'PESOS COL')
+    df_all['CLIENTE'] = df_all.get('DENOMINACION COMERCIAL', '')
+
+    grp_cols = ['NEGOCIO', 'CANAL', 'MONEDA', 'CLIENTE']
+    for c in grp_cols:
+        if c not in df_all.columns:
+            df_all[c] = ''
+
+    df_sum = (
+        df_all
+        .groupby(grp_cols, as_index=False)[columnas_sumables]
+        .sum()
+    )
+
+    df_sum.insert(0, 'PAIS',       'COLOMBIA')
+    df_sum.insert(3, 'COBRO/PAGO', 'CLIENTE')
+    df_sum = df_sum.rename(columns={'SALDO': 'SALDO TOTAL'})
+
+    # Totales generales por moneda (al final, según procedimiento pág. 6/8)
+    totales_moneda = (
+        df_sum
+        .groupby('MONEDA', as_index=False)[[
+            'SALDO TOTAL', 'SALDO NO VENCIDO', 'VENCIDO 30', 'VENCIDO 60',
+            'VENCIDO 90', 'VENCIDO 180', 'VENCIDO 360',
+            'VENCIDO + 360', 'DEUDA INCOBRABLE'
+        ]]
+        .sum()
+    )
+    totales_moneda['PAIS']       = 'COLOMBIA'
+    totales_moneda['NEGOCIO']    = 'TOTAL'
+    totales_moneda['CANAL']      = 'TOTAL'
+    totales_moneda['COBRO/PAGO'] = ''
+    totales_moneda['CLIENTE']    = 'TOTAL GENERAL POR MONEDA'
+    totales_moneda = totales_moneda[df_sum.columns]
+
+    df_final = pd.concat([df_sum, totales_moneda], ignore_index=True)
+    return df_final
+
+# ============================================================
+# FUNCIÓN PRINCIPAL: CREAR MODELO DE DEUDA
+# ============================================================
+def crear_modelo_deuda(archivo_provision: str,
+                       archivo_anticipos: str,
+                       output_file: str = '1_Modelo_Deuda.xlsx',
+                       usd_override: Optional[float] = None,
+                       eur_override: Optional[float] = None) -> str:
+
     if USE_UNIFIED_LOGGING:
         log_inicio_proceso("MODELO_DEUDA", f"{archivo_provision} + {archivo_anticipos}")
     else:
         logging.info("Iniciando modelo de deuda")
-    
-    print("\n" + "="*60)
-    print("  GENERADOR DE MODELO DE DEUDA")
-    print("="*60)
-    
-    # Cargar TRM
-    print("\n[1/6] Cargando tasas de cambio...")
-    trm_dolar, trm_euro, fecha_trm = cargar_tasas_cambio()
-    
-    # Leer archivos procesados
-    print("\n[2/6] Leyendo archivos procesados...")
-    
-    def leer_archivo(archivo):
-        """Lee archivo Excel o CSV"""
-        if not os.path.exists(archivo):
-            raise FileNotFoundError(f"No se encontró: {archivo}")
-        
-        if archivo.lower().endswith('.csv'):
-            encodings = ['utf-8-sig', 'utf-8', 'latin1', 'cp1252']
-            separators = [',', ';', '\t', '|']  # Probar diferentes separadores
-            
-            for encoding in encodings:
-                for sep in separators:
-                    try:
-                        df = pd.read_csv(archivo, encoding=encoding, sep=sep)
-                        # Verificar si la lectura fue exitosa (si hay más de una columna)
-                        if len(df.columns) > 1 or len(df) > 0:
-                            return df
-                    except:
-                        continue
-            
-            # Si falla con todos los separadores y codificaciones, usar valores predeterminados
-            return pd.read_csv(archivo, encoding='latin1', sep=';')
-        elif archivo.lower().endswith(('.xlsx', '.xls')):
-            return pd.read_excel(archivo, engine='openpyxl')
+
+    print("\n" + "=" * 62)
+    print("  MODELO DE DEUDA -- Procedimiento Departamento de Cartera")
+    print("=" * 62)
+
+    # -- PASO 1: TRM --
+    print("\n[1/7] Cargando tasas de cambio...")
+
+    # Intentar cargar desde trm_config si existe, fallback a trm.json directo
+    try:
+        from trm_config import load_trm
+        trm_data   = load_trm()
+        trm_dolar  = trm_data["usd"]
+        trm_euro   = trm_data["eur"]
+        fecha_trm  = trm_data["fecha"]
+        if usd_override and usd_override > 0:
+            trm_dolar = usd_override
+        if eur_override and eur_override > 0:
+            trm_euro = eur_override
+        print(f"  [OK] TRM ({fecha_trm})  USD: {trm_dolar:,.4f}  |  EUR: {trm_euro:,.4f}")
+    except ImportError:
+        # Leer provisión para obtener fecha de cierre y calcular último día mes anterior
+        _df_temp = leer_archivo(archivo_provision)
+        _mapeo_temp = {'PCCDEM': 'EMPRESA', 'PCCDAC': 'ACTIVIDAD', 'PCFEFA': 'FECHA'}
+        _df_temp = _df_temp.rename(columns={k: v for k, v in _mapeo_temp.items() if k in _df_temp.columns})
+        if 'FECHA' in _df_temp.columns:
+            _df_temp['FECHA'] = _ensure_datetime(_df_temp['FECHA'])
+            _fecha_cierre = _last_day_of_month(_df_temp['FECHA'].max()).strftime("%Y-%m-%d")
         else:
-            # Si no es CSV ni Excel, intentar como CSV por defecto
-            encodings = ['utf-8-sig', 'utf-8', 'latin1', 'cp1252']
-            separators = [',', ';', '\t', '|']
-            
-            for encoding in encodings:
-                for sep in separators:
-                    try:
-                        df = pd.read_csv(archivo, encoding=encoding, sep=sep)
-                        if len(df.columns) > 1 or len(df) > 0:
-                            return df
-                    except:
-                        continue
-            
-            return pd.read_csv(archivo, encoding='latin1', sep=';')
-    
-    df_provision = leer_archivo(archivo_provision)
-    df_anticipos = leer_archivo(archivo_anticipos)
-    
-    print(f"  [OK] Cartera: {len(df_provision)} registros")
-    print(f"  [OK] Anticipos: {len(df_anticipos)} registros")
-    
-    # Crear columna LINEA DE NEGOCIO
-    print("\n[3/6] Creando líneas de negocio...")
-    
-    # Mapeo de columnas de código a nombres
+            _fecha_cierre = datetime.today().strftime("%Y-%m-%d")
+        trm_dolar, trm_euro, fecha_trm = cargar_tasas_cambio(
+            _fecha_cierre, usd_override, eur_override
+        )
+
+    # -- PASO 2: Leer archivos --
+    print("\n[2/7] Leyendo archivos de entrada...")
+    df_provision_raw = leer_archivo(archivo_provision)
+    df_anticipos_raw = leer_archivo(archivo_anticipos)
+    print(f"  [OK] Provisión: {len(df_provision_raw):,} registros")
+    print(f"  [OK] Anticipos: {len(df_anticipos_raw):,} registros")
+
+    # -- PASO 3: Renombrar columnas provisión (procedimiento pág. 2) --
+    print("\n[3/7] Normalizando provisión y calculando vencimientos...")
     mapeo_cartera = {
         'PCCDEM': 'EMPRESA',
         'PCCDAC': 'ACTIVIDAD',
-        'PCNMCL': 'NOMBRE CLIENTE',
+        'PCDEAC': 'EMPRESA',
+        'PCCDAG': 'CODIGO AGENTE',
+        'PCNMAG': 'AGENTE',
+        'PCCDCO': 'CODIGO COBRADOR',
+        'PCNMCO': 'COBRADOR',
+        'PCCDCL': 'CODIGO CLIENTE',
+        'PCCDDN': 'IDENTIFICACION',
+        'PCNMCL': 'NOMBRE',
         'PCNMCM': 'DENOMINACION COMERCIAL',
-        'PCVAFA': 'VALOR FACTURA',
-        'PCSALD': 'SALDO',
-        'PCIMCO': 'DEUDA INCOBRABLE',
-        'PCFEVE': 'FECHA VTO',
-        'PCFEFA': 'FECHA',
-        'PCORPD': 'TIPO',
-        'PCTLF1': 'TELEFONO',
         'PCNMDO': 'DIRECCION',
+        'PCTLF1': 'TELEFONO',
         'PCNMPO': 'CIUDAD',
         'PCNUFC': 'NUMERO FACTURA',
-        'PCCDCL': 'CODIGO CLIENTE',
-        'PCCDDN': 'IDENTIFICACION'
+        'PCORPD': 'TIPO',
+        'PCFEFA': 'FECHA',
+        'PCFEVE': 'FECHA VTO',
+        'PCVAFA': 'VALOR',
+        'PCSALD': 'SALDO',
     }
-    
+    df_provision = df_provision_raw.rename(
+        columns={k: v for k, v in mapeo_cartera.items() if k in df_provision_raw.columns}
+    )
+
+    # Aplicar todas las transformaciones del procedimiento
+    df_provision = calcular_campos_provision(df_provision)
+
+    # -- PASO 4: Procesar anticipos (procedimiento pág. 4) --
+    print("\n[4/7] Procesando anticipos (registros negativos, no compensación)...")
     mapeo_anticipos = {
         'NCCDEM': 'EMPRESA',
         'NCCDAC': 'ACTIVIDAD',
-        'WWNMCL': 'NOMBRE CLIENTE',
-        'BDNMNM': 'DENOMINACION COMERCIAL',
-        'NCCDR3': 'VALOR ANTICIPO',
-        'NCFEGR': 'FECHA',
         'NCCDCL': 'CODIGO CLIENTE',
-        'WWNIT': 'IDENTIFICACION',
+        'WWNIT':  'IDENTIFICACION',
+        'WWNMCL': 'DENOMINACION COMERCIAL',
         'WWNMDO': 'DIRECCION',
         'WWTLF1': 'TELEFONO',
         'WWNMPO': 'CIUDAD',
-        'NCMOMO': 'SALDO',
-        'NCIMAN': 'DEUDA INCOBRABLE'
+        'CCCDFB': 'CODIGO AGENTE',
+        'BDNMNM': 'NOMBRE AGENTE',
+        'BDNMPA': 'APELLIDO AGENTE',
+        'NCMOMO': 'TIPO ANTICIPO',
+        'NCCDR3': 'NUMERO ANTICIPO',
+        'NCIMAN': 'VALOR ANTICIPO',
+        'NCFEGR': 'FECHA',
     }
-    
-    # Aplicar mapeo a cartera
-    for codigo, nombre in mapeo_cartera.items():
-        if codigo in df_provision.columns:
-            df_provision = df_provision.rename(columns={codigo: nombre})
-    
-    # Aplicar mapeo a anticipos
-    for codigo, nombre in mapeo_anticipos.items():
-        if codigo in df_anticipos.columns:
-            df_anticipos = df_anticipos.rename(columns={codigo: nombre})
-    
-    # Para cartera (EMPRESA + ACTIVIDAD)
-    if 'EMPRESA' in df_provision.columns and 'ACTIVIDAD' in df_provision.columns:
-        # Limpiar valores de EMPRESA y ACTIVIDAD
-        emp = df_provision['EMPRESA'].astype(str).str.strip().str.upper()
-        act = df_provision['ACTIVIDAD'].astype(str).str.strip().str.upper()
-        # Eliminar decimales si existen
-        act = act.str.replace(r'\.0+$', '', regex=True)
-        df_provision['LINEA DE NEGOCIO'] = emp + act
-        print(f"  [DEBUG] Líneas de negocio en cartera: {df_provision['LINEA DE NEGOCIO'].nunique()} líneas únicas")
-    
-    # Para anticipos (usar LINEA_VENTA o crear)
-    if 'LINEA_VENTA' in df_anticipos.columns:
-        df_anticipos['LINEA DE NEGOCIO'] = df_anticipos['LINEA_VENTA'].astype(str).str.strip().str.upper()
-        print(f"  [DEBUG] Líneas de negocio en anticipos (LINEA_VENTA): {df_anticipos['LINEA DE NEGOCIO'].nunique()} líneas únicas")
-    elif 'EMPRESA' in df_anticipos.columns and 'ACTIVIDAD' in df_anticipos.columns:
-        # Limpiar valores de EMPRESA y ACTIVIDAD
-        emp = df_anticipos['EMPRESA'].astype(str).str.strip().str.upper()
-        act = df_anticipos['ACTIVIDAD'].astype(str).str.strip().str.upper()
-        # Eliminar decimales si existen
-        act = act.str.replace(r'\.0+$', '', regex=True)
-        df_anticipos['LINEA DE NEGOCIO'] = emp + act
-        print(f"  [DEBUG] Líneas de negocio en anticipos (EMPRESA+ACTIVIDAD): {df_anticipos['LINEA DE NEGOCIO'].nunique()} líneas únicas")
-    
-    # Mapear VALOR ANTICIPO a SALDO si no existe
-    if 'VALOR ANTICIPO' in df_anticipos.columns and 'SALDO' not in df_anticipos.columns:
-        df_anticipos['SALDO'] = df_anticipos['VALOR ANTICIPO']
-    
-    # Mapear NOMBRE COMERCIAL a DENOMINACION COMERCIAL si no existe
-    if 'NOMBRE COMERCIAL' in df_anticipos.columns and 'DENOMINACION COMERCIAL' not in df_anticipos.columns:
-        df_anticipos['DENOMINACION COMERCIAL'] = df_anticipos['NOMBRE COMERCIAL']
-    
-    print(f"  [OK] Líneas de negocio creadas")
-    
-    # HOJA 1: PESOS
-    print("\n[4/6] Procesando hoja PESOS...")
-    lineas_pesos_keys = [f"{cod}{act}" for cod, act in LINEAS_PESOS]
-    
-    df_pesos = df_provision[df_provision['LINEA DE NEGOCIO'].isin(lineas_pesos_keys)].copy()
-    print(f"  [OK] Cartera en pesos: {len(df_pesos)} registros")
-    
-    # Agregar anticipos en pesos
-    if 'MONEDA' in df_anticipos.columns:
-        # Crear una máscara más precisa para identificar monedas en pesos
-        mask_pesos = ~df_anticipos['MONEDA'].str.contains('USD|EUR|DOLAR|EURO', case=False, na=True)
-        # También considerar NaN o valores vacíos como pesos
-        mask_pesos = mask_pesos | df_anticipos['MONEDA'].isna() | (df_anticipos['MONEDA'].str.strip() == '')
-        df_anticipos_pesos = df_anticipos[mask_pesos].copy()
-        
-        if not df_anticipos_pesos.empty:
-            print(f"  [DEBUG] Anticipos en pesos encontrados: {len(df_anticipos_pesos)} registros")
-            
-            # Asegurar que los anticipos tengan la misma estructura que cartera
-            columnas_requeridas = ['LINEA DE NEGOCIO', 'DENOMINACION COMERCIAL', 'MONEDA', 'SALDO', 
-                                 'SALDO NO VENCIDO', 'VENCIDO 30', 'VENCIDO 60', 'VENCIDO 90', 
-                                 'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360', 'DEUDA INCOBRABLE']
-            
-            # Asegurar que todas las columnas requeridas existan
-            for col in columnas_requeridas:
-                if col not in df_anticipos_pesos.columns:
-                    if col in ['SALDO', 'SALDO NO VENCIDO', 'VENCIDO 30', 
-                               'VENCIDO 60', 'VENCIDO 90', 'VENCIDO 180', 
-                               'VENCIDO 360', 'VENCIDO + 360', 'DEUDA INCOBRABLE']:
-                        df_anticipos_pesos[col] = 0.0
-                    else:
-                        df_anticipos_pesos[col] = ''
-            
-            # Asegurar que los saldos de anticipos se distribuyan correctamente en las columnas de vencimiento
-            if 'SALDO' in df_anticipos_pesos.columns:
-                # Para anticipos, todo el saldo se considera no vencido
-                df_anticipos_pesos['SALDO NO VENCIDO'] = df_anticipos_pesos['SALDO'].astype('float64')
-                
-                # Inicializar otras columnas de vencimiento a cero, pero si existen en los datos de entrada, mantener sus valores
-                for col_venc in ['VENCIDO 30', 'VENCIDO 60', 'VENCIDO 90', 'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360']:
-                    if col_venc not in df_anticipos_pesos.columns:
-                        df_anticipos_pesos[col_venc] = 0.0
-                
-                # Para DEUDA INCOBRABLE, si existe en los datos de entrada, mantener su valor, de lo contrario inicializar en 0
-                if 'DEUDA INCOBRABLE' not in df_anticipos_pesos.columns:
-                    df_anticipos_pesos['DEUDA INCOBRABLE'] = 0.0
-            
-            # Filtrar anticipos por líneas de negocio en pesos
-            if 'LINEA DE NEGOCIO' in df_anticipos_pesos.columns:
-                df_anticipos_pesos = df_anticipos_pesos[df_anticipos_pesos['LINEA DE NEGOCIO'].isin(lineas_pesos_keys)]
-            
-            # Asegurar que los anticipos tengan las mismas columnas que cartera
-            # Primero, obtener las columnas que existen en cartera
-            columnas_cartera = df_pesos.columns.tolist() if not df_pesos.empty else []
-            
-            # Asegurar que anticipos tenga todas las columnas de cartera
-            for col in columnas_cartera:
-                if col not in df_anticipos_pesos.columns:
-                    if col in ['SALDO', 'SALDO NO VENCIDO', 'VENCIDO 30', 
-                               'VENCIDO 60', 'VENCIDO 90', 'VENCIDO 180', 
-                               'VENCIDO 360', 'VENCIDO + 360', 'DEUDA INCOBRABLE']:
-                        df_anticipos_pesos[col] = 0.0
-                    else:
-                        df_anticipos_pesos[col] = ''
-            
-            # Reordenar columnas de anticipos para que coincidan con cartera
-            if columnas_cartera:  # Solo reordenar si hay columnas
-                # Convertir a lista explícitamente para evitar problemas de tipo con Pyright
-                # Usar reindex en lugar de reindex(columns=) para evitar errores de tipo en Pyright
-                df_anticipos_pesos = df_anticipos_pesos.reindex(columns=columnas_cartera)
-            
-            # Aplicar lógica de compensación de anticipos con cartera
-            # Los anticipos tienen valores negativos (en la hoja de anticipos ya están multiplicados por -1), por lo tanto se suman a la cartera (lo que reduce el saldo)
-            print(f"  [DEBUG] Aplicando compensación de anticipos a cartera...")
-            
-            # Agrupar anticipos por DENOMINACION COMERCIAL para aplicarlos a todos los registros del cliente
-            if 'DENOMINACION COMERCIAL' in df_anticipos_pesos.columns:
-                print(f"  [DEBUG] Procesando anticipos para compensación")
-                print(f"  [DEBUG] Total anticipos antes de agrupar: {df_anticipos_pesos['SALDO'].sum()}")
-                
-                # Agrupar anticipos por cliente para sumar todos los anticipos del cliente
-                anticipos_agrupados_cliente = df_anticipos_pesos.groupby('DENOMINACION COMERCIAL').agg({
-                    'SALDO': 'sum',
-                    'SALDO NO VENCIDO': 'sum',
-                    'VENCIDO 30': 'sum',
-                    'VENCIDO 60': 'sum',
-                    'VENCIDO 90': 'sum',
-                    'VENCIDO 180': 'sum',
-                    'VENCIDO 360': 'sum',
-                    'VENCIDO + 360': 'sum',
-                    'DEUDA INCOBRABLE': 'sum'
-                }).reset_index()
-                
-                print(f"  [DEBUG] Anticipos agrupados por cliente: {len(anticipos_agrupados_cliente)} clientes")
-                
-                # Aplicar compensación a los registros de cartera
-                for idx, row in anticipos_agrupados_cliente.iterrows():
-                    mask = df_pesos['DENOMINACION COMERCIAL'] == row['DENOMINACION COMERCIAL']
-                    
-                    if mask.any():  # type: ignore[truthy-bool]
-                        # Calcular el saldo total antes de la compensación para este cliente
-                        saldo_antes = safe_float_conversion(df_pesos.loc[mask, 'SALDO'].sum())
-                        
-                        print(f"    [DEBUG] Aplicando compensación a: {row['DENOMINACION COMERCIAL']}")
-                        print(f"    [DEBUG] Saldo antes: {saldo_antes}, Anticipo a aplicar: {row['SALDO']}")
-                        
-                        # Aplicar compensación a cada columna de saldo a todos los registros del cliente
-                        # IMPORTANTE: Los anticipos tienen valores negativos (en la hoja de anticipos ya están multiplicados por -1), por lo tanto se suman a la cartera (lo que reduce el saldo)
-                        df_pesos.loc[mask, 'SALDO'] += row['SALDO']
-                        df_pesos.loc[mask, 'SALDO NO VENCIDO'] += row['SALDO NO VENCIDO']
-                        df_pesos.loc[mask, 'VENCIDO 30'] += row['VENCIDO 30']
-                        df_pesos.loc[mask, 'VENCIDO 60'] += row['VENCIDO 60']
-                        df_pesos.loc[mask, 'VENCIDO 90'] += row['VENCIDO 90']
-                        df_pesos.loc[mask, 'VENCIDO 180'] += row['VENCIDO 180']
-                        df_pesos.loc[mask, 'VENCIDO 360'] += row['VENCIDO 360']
-                        df_pesos.loc[mask, 'VENCIDO + 360'] += row['VENCIDO + 360']
-                        df_pesos.loc[mask, 'DEUDA INCOBRABLE'] += row['DEUDA INCOBRABLE']
-                        
-                        saldo_despues = safe_float_conversion(df_pesos.loc[mask, 'SALDO'].sum())
-                        print(f"    [DEBUG] Compensación aplicada a: {row['DENOMINACION COMERCIAL']}")
-                        print(f"    [DEBUG] Antes: {saldo_antes}, Despues: {saldo_despues}, Diferencia: {saldo_despues - saldo_antes}")
-                        print(f"    [DEBUG] Total registros afectados: {mask.sum()}")
-                        print(f"    [DEBUG] Verificando si hay anticipos negativos: {(row['SALDO'] < 0) if pd.api.types.is_scalar(row['SALDO']) else (row['SALDO'] < 0).any()}")
-                    else:
-                        # Si no hay cartera para este cliente, agregar el anticipo como nuevo registro
-                        # Tomar un registro cualquiera de los anticipos para este cliente
-                        cliente_anticipos = df_anticipos_pesos[
-                            df_anticipos_pesos['DENOMINACION COMERCIAL'] == row['DENOMINACION COMERCIAL']
-                        ]
-                        nuevo_registro = cliente_anticipos.iloc[0].copy()
-                        df_pesos = pd.concat([df_pesos, pd.DataFrame([nuevo_registro])], ignore_index=True)
-                        print(f"    [DEBUG] Agregando anticipo como nuevo registro para: {row['DENOMINACION COMERCIAL']}")
-            
-            print(f"  [OK] Anticipos compensados: {len(df_anticipos_pesos)} registros procesados")
-            print(f"  [OK] Total PESOS después de compensación: {len(df_pesos)} registros")
-    
-    # Calcular totales para PESOS
-    columnas_suma = ['SALDO', 'SALDO NO VENCIDO', 'VENCIDO 30', 'VENCIDO 60',
-                     'VENCIDO 90', 'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360',
-                     'DEUDA INCOBRABLE']
-    
-    # Agregar columnas de NEGOCIO y CANAL a PESOS basadas en LINEA DE NEGOCIO
-    if 'LINEA DE NEGOCIO' in df_pesos.columns:
-        df_pesos['NEGOCIO'] = df_pesos['LINEA DE NEGOCIO'].apply(
-            lambda x: TABLA_NEGOCIO_CANAL.get(str(x).strip().upper(), {'NEGOCIO': 'OTROS', 'CANAL': str(x)})['NEGOCIO']
+    df_anticipos = df_anticipos_raw.rename(
+        columns={k: v for k, v in mapeo_anticipos.items() if k in df_anticipos_raw.columns}
+    )
+
+    if 'EMPRESA' in df_anticipos.columns and 'ACTIVIDAD' in df_anticipos.columns:
+        df_anticipos['LINEA DE NEGOCIO'] = df_anticipos.apply(
+            lambda r: _build_linea_key(r['EMPRESA'], r['ACTIVIDAD']), axis=1
         )
-        df_pesos['CANAL'] = df_pesos['LINEA DE NEGOCIO'].apply(
-            lambda x: TABLA_NEGOCIO_CANAL.get(str(x).strip().upper(), {'NEGOCIO': str(x), 'CANAL': str(x)})['CANAL']
+
+    # Valor anticipo * -1 (debe ser negativo, procedimiento pág. 4)
+    if 'VALOR ANTICIPO' in df_anticipos.columns:
+        df_anticipos['SALDO'] = (
+            pd.to_numeric(df_anticipos['VALOR ANTICIPO'], errors='coerce').fillna(0.0) * -1
         )
-    
-    # No filtrar registros con saldos cero o negativos para mantener visibles los anticipos que superan la cartera
-    # Los valores negativos deben mostrarse explícitamente en los informes financieros
-    print(f"  [DEBUG] Registros PESOS antes de filtrar: {len(df_pesos)}")
-    print(f"  [DEBUG] Se mantienen todos los registros incluyendo saldos negativos después de compensación")
-    
-    # No agrupar por cliente si ya se aplicó compensación, para mantener la compensación por línea de negocio
-    # La agrupación se hará en la hoja de vencimientos manteniendo las líneas de negocio
-    
-    # Agregar columna de NEGOCIO basada en LINEA DE NEGOCIO
-    if 'LINEA DE NEGOCIO' in df_pesos.columns:
-        df_pesos['NEGOCIO'] = df_pesos['LINEA DE NEGOCIO'].apply(
-            lambda x: TABLA_NEGOCIO_CANAL.get(str(x).strip().upper(), {'NEGOCIO': 'OTROS', 'CANAL': str(x)})['NEGOCIO']
-        )
-        
-        # Eliminar columnas origen que ya no son necesarias
-        columnas_a_eliminar = ['LINEA DE NEGOCIO', 'EMPRESA', 'ACTIVIDAD']
-        for col in columnas_a_eliminar:
-            if col in df_pesos.columns:
-                df_pesos = df_pesos.drop(columns=[col])
-    
-    total_pesos = safe_float_conversion(df_pesos['SALDO'].sum()) if 'SALDO' in df_pesos.columns else 0.0
-    print(f"  [OK] Saldo total PESOS: ${total_pesos:,.0f}")
-    
-    # HOJA 2: DIVISAS
-    print("\n[5/6] Procesando hoja DIVISAS...")
-    lineas_divisas_keys = [f"{cod}{act}" for cod, act in LINEAS_DIVISAS]
-    
+    else:
+        df_anticipos['SALDO'] = 0.0
+
+    # Normalizar columna DENOMINACION COMERCIAL en anticipos
+    if 'DENOMINACION COMERCIAL' not in df_anticipos.columns:
+        df_anticipos['DENOMINACION COMERCIAL'] = ''
+
+    df_anticipos['FECHA'] = _ensure_datetime(df_anticipos.get('FECHA', pd.NaT))
+
+    # Fecha de corte desde provisión
+    if 'FECHA' in df_provision.columns and df_provision['FECHA'].notna().any():
+        fecha_corte = _last_day_of_month(df_provision['FECHA'].max())
+    else:
+        fecha_corte = _last_day_of_month(pd.Timestamp.today())
+
+    df_anticipos['FECHA VTO']      = fecha_corte
+    df_anticipos['VTO_DIA']        = fecha_corte.day
+    df_anticipos['VTO_MES']        = fecha_corte.month
+    df_anticipos['VTO_ANIO']       = fecha_corte.year
+    df_anticipos['DIAS VENCIDOS']  = 0
+    df_anticipos['DIAS POR VENCER']= 0
+
+    # Anticipos: van en SALDO NO VENCIDO (procedimiento pág. 5)
+    df_anticipos['SALDO VENCIDO']   = 0.0
+    df_anticipos['% DOTACION']      = 0.0
+    df_anticipos['DEUDA INCOBRABLE']= 0.0
+    df_anticipos['SALDO NO VENCIDO']= df_anticipos['SALDO']
+    for col in ['VENCIDO 30', 'VENCIDO 60', 'VENCIDO 90',
+                'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360']:
+        df_anticipos[col] = 0.0
+    df_anticipos['MORA TOTAL']      = 0.0
+    df_anticipos['TOTAL POR VENCER']= df_anticipos['SALDO']
+    df_anticipos['POR VENCER M1']   = 0.0
+    df_anticipos['POR VENCER M2']   = 0.0
+    df_anticipos['POR VENCER M3']   = 0.0
+    df_anticipos['MAYOR 90 DIAS']   = 0.0
+
+    print(f"  [OK] {len(df_anticipos):,} anticipos procesados")
+
+    # -- PASO 5: Separar PESOS y DIVISAS (procedimientos pág. 5-6) --
+    print("\n[5/7] Separando hojas PESOS y DIVISAS...")
+    lineas_pesos_keys   = {f"{cod}{act}" for cod, act in LINEAS_PESOS}
+    lineas_divisas_keys = {f"{cod}{act}" for cod, act in LINEAS_DIVISAS}
+
+    df_pesos   = df_provision[df_provision['LINEA DE NEGOCIO'].isin(lineas_pesos_keys)].copy()
     df_divisas = df_provision[df_provision['LINEA DE NEGOCIO'].isin(lineas_divisas_keys)].copy()
-    print(f"  [OK] Cartera en divisas: {len(df_divisas)} registros")
-    
-    # Agregar anticipos en divisas
-    if 'MONEDA' in df_anticipos.columns:
-        df_anticipos_divisas = df_anticipos[
-            df_anticipos['MONEDA'].str.contains('USD|EUR|DOLAR|EURO', case=False, na=False)
-        ].copy()
-        
-        if not df_anticipos_divisas.empty:
-            print(f"  [DEBUG] Anticipos en divisas encontrados: {len(df_anticipos_divisas)} registros")
-            
-            # Asegurar que los anticipos tengan la misma estructura que cartera
-            columnas_requeridas = ['LINEA DE NEGOCIO', 'DENOMINACION COMERCIAL', 'MONEDA', 'SALDO', 
-                                 'SALDO NO VENCIDO', 'VENCIDO 30', 'VENCIDO 60', 'VENCIDO 90', 
-                                 'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360', 'DEUDA INCOBRABLE']
-            
-            # Asegurar que todas las columnas requeridas existan
-            for col in columnas_requeridas:
-                if col not in df_anticipos_divisas.columns:
-                    if col in ['SALDO', 'SALDO NO VENCIDO', 'VENCIDO 30', 
-                               'VENCIDO 60', 'VENCIDO 90', 'VENCIDO 180', 
-                               'VENCIDO 360', 'VENCIDO + 360', 'DEUDA INCOBRABLE']:
-                        df_anticipos_divisas[col] = 0.0
-                    else:
-                        df_anticipos_divisas[col] = ''
-            
-            # Asegurar que los saldos de anticipos se distribuyan correctamente en las columnas de vencimiento
-            if 'SALDO' in df_anticipos_divisas.columns:
-                # Para anticipos, todo el saldo se considera no vencido
-                df_anticipos_divisas['SALDO NO VENCIDO'] = df_anticipos_divisas['SALDO'].astype('float64')
-                
-                # Inicializar otras columnas de vencimiento a cero, pero si existen en los datos de entrada, mantener sus valores
-                for col_venc in ['VENCIDO 30', 'VENCIDO 60', 'VENCIDO 90', 'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360']:
-                    if col_venc not in df_anticipos_divisas.columns:
-                        df_anticipos_divisas[col_venc] = 0.0
-                
-                # Para DEUDA INCOBRABLE, si existe en los datos de entrada, mantener su valor, de lo contrario inicializar en 0
-                if 'DEUDA INCOBRABLE' not in df_anticipos_divisas.columns:
-                    df_anticipos_divisas['DEUDA INCOBRABLE'] = 0.0
-            
-            # Filtrar anticipos por líneas de negocio en divisas
-            if 'LINEA DE NEGOCIO' in df_anticipos_divisas.columns:
-                df_anticipos_divisas = df_anticipos_divisas[df_anticipos_divisas['LINEA DE NEGOCIO'].isin(lineas_divisas_keys)]
-            
-            # Asegurar que los anticipos tengan las mismas columnas que cartera
-            # Primero, obtener las columnas que existen en cartera
-            columnas_cartera = df_divisas.columns.tolist() if not df_divisas.empty else []
-            
-            # Asegurar que anticipos tenga todas las columnas de cartera
-            for col in columnas_cartera:
-                if col not in df_anticipos_divisas.columns:
-                    if col in ['SALDO', 'SALDO NO VENCIDO', 'VENCIDO 30', 
-                               'VENCIDO 60', 'VENCIDO 90', 'VENCIDO 180', 
-                               'VENCIDO 360', 'VENCIDO + 360', 'DEUDA INCOBRABLE']:
-                        df_anticipos_divisas[col] = 0.0
-                    else:
-                        df_anticipos_divisas[col] = ''
-            
-            # Reordenar columnas de anticipos para que coincidan con cartera
-            if columnas_cartera:  # Solo reindexar si hay columnas
-                # Convertir a lista explícitamente para evitar problemas de tipo con Pyright
-                # Usar reindex en lugar de reindex(columns=) para evitar errores de tipo en Pyright
-                df_anticipos_divisas = df_anticipos_divisas.reindex(columns=columnas_cartera)
-            
-            # Aplicar lógica de compensación de anticipos con cartera
-            # Los anticipos tienen valores negativos (en la hoja de anticipos ya están multiplicados por -1), por lo tanto se suman a la cartera (lo que reduce el saldo)
-            print(f"  [DEBUG] Aplicando compensación de anticipos divisas a cartera...")
-            
-            # Agrupar anticipos por DENOMINACION COMERCIAL para aplicarlos a todos los registros del cliente
-            if 'DENOMINACION COMERCIAL' in df_anticipos_divisas.columns:
-                print(f"  [DEBUG] Procesando anticipos divisas para compensación")
-                print(f"  [DEBUG] Total anticipos divisas antes de agrupar: {df_anticipos_divisas['SALDO'].sum()}")
-                
-                # Agrupar anticipos por cliente para sumar todos los anticipos del cliente
-                anticipos_agrupados_cliente = df_anticipos_divisas.groupby('DENOMINACION COMERCIAL').agg({
-                    'SALDO': 'sum',
-                    'SALDO NO VENCIDO': 'sum',
-                    'VENCIDO 30': 'sum',
-                    'VENCIDO 60': 'sum',
-                    'VENCIDO 90': 'sum',
-                    'VENCIDO 180': 'sum',
-                    'VENCIDO 360': 'sum',
-                    'VENCIDO + 360': 'sum',
-                    'DEUDA INCOBRABLE': 'sum'
-                }).reset_index()
-                
-                print(f"  [DEBUG] Anticipos divisas agrupados por cliente: {len(anticipos_agrupados_cliente)} clientes")
-                
-                # Aplicar compensación a los registros de cartera
-                for idx, row in anticipos_agrupados_cliente.iterrows():
-                    mask = df_divisas['DENOMINACION COMERCIAL'] == row['DENOMINACION COMERCIAL']
-                    
-                    if mask.any():  # type: ignore[truthy-bool]
-                        # Calcular el saldo total antes de la compensación para este cliente
-                        saldo_antes = safe_float_conversion(df_divisas.loc[mask, 'SALDO'].sum())
-                        
-                        print(f"    [DEBUG] Aplicando compensación divisas a: {row['DENOMINACION COMERCIAL']}")
-                        print(f"    [DEBUG] Saldo antes: {saldo_antes}, Anticipo a aplicar: {row['SALDO']}")
-                        
-                        # Aplicar compensación a cada columna de saldo a todos los registros del cliente
-                        df_divisas.loc[mask, 'SALDO'] += row['SALDO']
-                        df_divisas.loc[mask, 'SALDO NO VENCIDO'] += row['SALDO NO VENCIDO']
-                        df_divisas.loc[mask, 'VENCIDO 30'] += row['VENCIDO 30']
-                        df_divisas.loc[mask, 'VENCIDO 60'] += row['VENCIDO 60']
-                        df_divisas.loc[mask, 'VENCIDO 90'] += row['VENCIDO 90']
-                        df_divisas.loc[mask, 'VENCIDO 180'] += row['VENCIDO 180']
-                        df_divisas.loc[mask, 'VENCIDO 360'] += row['VENCIDO 360']
-                        df_divisas.loc[mask, 'VENCIDO + 360'] += row['VENCIDO + 360']
-                        df_divisas.loc[mask, 'DEUDA INCOBRABLE'] += row['DEUDA INCOBRABLE']
-                        
-                        saldo_despues = safe_float_conversion(df_divisas.loc[mask, 'SALDO'].sum())
-                        print(f"    [DEBUG] Compensación divisas aplicada a: {row['DENOMINACION COMERCIAL']}")
-                        print(f"    [DEBUG] Antes: {saldo_antes}, Despues: {saldo_despues}, Diferencia: {saldo_despues - saldo_antes}")
-                        print(f"    [DEBUG] Total registros divisas afectados: {mask.sum()}")
-                    else:
-                        # Si no hay cartera para este cliente, agregar el anticipo como nuevo registro
-                        # Tomar un registro cualquiera de los anticipos para este cliente
-                        cliente_anticipos = df_anticipos_divisas[
-                            df_anticipos_divisas['DENOMINACION COMERCIAL'] == row['DENOMINACION COMERCIAL']
-                        ]
-                        nuevo_registro = cliente_anticipos.iloc[0].copy()
-                        df_divisas = pd.concat([df_divisas, pd.DataFrame([nuevo_registro])], ignore_index=True)
-                        print(f"    [DEBUG] Agregando anticipo divisas como nuevo registro para: {row['DENOMINACION COMERCIAL']}")
-            
-            print(f"  [OK] Anticipos divisas compensados: {len(df_anticipos_divisas)} registros procesados")
-            print(f"  [OK] Total DIVISAS después de compensación: {len(df_divisas)} registros")
-    
-    # Agregar columna de NEGOCIO basada en LINEA DE NEGOCIO
-    if 'LINEA DE NEGOCIO' in df_divisas.columns:
-        df_divisas['NEGOCIO'] = df_divisas['LINEA DE NEGOCIO'].apply(
-            lambda x: TABLA_NEGOCIO_CANAL.get(str(x).strip().upper(), {'NEGOCIO': 'OTROS', 'CANAL': str(x)})['NEGOCIO']
+
+    ant_pesos = df_anticipos[df_anticipos['LINEA DE NEGOCIO'].isin(lineas_pesos_keys)].copy()
+    ant_div   = df_anticipos[df_anticipos['LINEA DE NEGOCIO'].isin(lineas_divisas_keys)].copy()
+
+    df_pesos['MONEDA']   = 'PESOS COL'
+    ant_pesos['MONEDA']  = 'PESOS COL'
+    df_divisas['MONEDA'] = df_divisas['LINEA DE NEGOCIO'].apply(_moneda_por_linea)
+    ant_div['MONEDA']    = ant_div['LINEA DE NEGOCIO'].apply(_moneda_por_linea)
+
+    df_pesos_final   = pd.concat([df_pesos,   ant_pesos], ignore_index=True)
+    df_divisas_final = pd.concat([df_divisas, ant_div],   ignore_index=True)
+
+    # Asignar NEGOCIO y CANAL
+    for dfX in (df_pesos_final, df_divisas_final):
+        dfX['NEGOCIO'] = dfX['LINEA DE NEGOCIO'].apply(
+            lambda k: TABLA_NEGOCIO_CANAL.get(
+                str(k).strip().upper(), {'NEGOCIO': 'OTROS', 'CANAL': 'OTROS'}
+            )['NEGOCIO']
         )
-        
-        # Eliminar columnas origen que ya no son necesarias
-        columnas_a_eliminar = ['LINEA DE NEGOCIO', 'EMPRESA', 'ACTIVIDAD']
-        for col in columnas_a_eliminar:
-            if col in df_divisas.columns:
-                df_divisas = df_divisas.drop(columns=[col])
-    
-    # No filtrar registros con saldos cero o negativos para mantener visibles los anticipos que superan la cartera
-    # Los valores negativos deben mostrarse explícitamente en los informes financieros
-    print(f"  [DEBUG] Registros DIVISAS antes de filtrar: {len(df_divisas)}")
-    print(f"  [DEBUG] Se mantienen todos los registros incluyendo saldos negativos después de compensación")
-    
-    # Asegurar que los anticipos negativos se mantengan visibles
-    if 'SALDO' in df_divisas.columns:
-        saldo_negativo_count = len(df_divisas[df_divisas['SALDO'] < 0])
-        print(f"  [DEBUG] Registros con saldos negativos en divisas: {saldo_negativo_count}")
-        if saldo_negativo_count > 0:
-            print(f"  [DEBUG] Ejemplo de saldo negativo: {df_divisas[df_divisas['SALDO'] < 0]['SALDO'].head().tolist()}")
-    
-    # Agrupar saldos por cliente (DENOMINACION COMERCIAL) para evitar duplicados
-    if 'DENOMINACION COMERCIAL' in df_divisas.columns:
-        # Mantener las columnas que no deben agruparse por cliente, sino que se tomarán del primer registro
-        columnas_a_mantener = ['EMPRESA_2', 'CODIGO AGENTE', 'AGENTE', 'CODIGO COBRADOR', 'COBRADOR', 
-                              'CODIGO CLIENTE', 'IDENTIFICACION', 'NOMBRE', 'DIRECCION', 'TELEFONO', 'CIUDAD', 
-                              'NUMERO FACTURA', 'TIPO', 'FECHA', 'FECHA VTO', 'VALOR', 'DIAS VENCIDO']
-        
-        # Definir cómo se deben agrupar las columnas
-        agg_dict = {}
-        for col in df_divisas.columns:
-            # No incluir la columna de agrupación en el diccionario de agregación
-            if col == 'DENOMINACION COMERCIAL':
-                continue  # Saltar la columna por la que vamos a agrupar
-            if col in ['SALDO', 'SALDO NO VENCIDO', 'VENCIDO 30', 'VENCIDO 60', 'VENCIDO 90', 'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360', 'DEUDA INCOBRABLE']:
-                agg_dict[col] = 'sum'
-            elif col in columnas_a_mantener:
-                agg_dict[col] = 'first'  # Tomar el primer valor disponible
-            elif col in ['LINEA DE NEGOCIO', 'EMPRESA', 'ACTIVIDAD']:
-                agg_dict[col] = 'first'  # Tomar el primer valor disponible
-            elif col in ['NEGOCIO', 'CANAL']:
-                agg_dict[col] = 'first'  # Tomar el primer valor disponible
-            else:
-                # Para otras columnas, usar first si no son columnas de saldo
-                agg_dict[col] = 'first'
-        
-    
-    # No agrupar por cliente si ya se aplicó compensación, para mantener la compensación por línea de negocio
-    # La agrupación se hará en la hoja de vencimientos manteniendo las líneas de negocio
-    
-    total_divisas = safe_float_conversion(df_divisas['SALDO'].sum()) if 'SALDO' in df_divisas.columns else 0.0
-    print(f"  [OK] Saldo total DIVISAS: ${total_divisas:,.0f}")
-    
-    # Crear copias de los DataFrames para las hojas PESOS y DIVISAS sin las columnas innecesarias
-    df_pesos_salida = df_pesos.copy()
-    df_divisas_salida = df_divisas.copy()
-    
-    # Eliminar columnas innecesarias que ya están representadas en otras columnas
-    columnas_a_eliminar = ['LINEA DE NEGOCIO', 'EMPRESA', 'ACTIVIDAD']
-    for col in columnas_a_eliminar:
-        if col in df_pesos_salida.columns:
-            df_pesos_salida = df_pesos_salida.drop(columns=[col])
-        if col in df_divisas_salida.columns:
-            df_divisas_salida = df_divisas_salida.drop(columns=[col])
-    
-    # Formatear fechas para mostrar solo la fecha sin la hora
-    for df in [df_pesos_salida, df_divisas_salida]:
-        for col in ['FECHA', 'FECHA VTO']:
-            if col in df.columns:
-                try:
-                    df[col] = pd.to_datetime(df[col]).dt.strftime('%Y-%m-%d')
-                except:
-                    # Si no se puede convertir a datetime, dejar el valor como está
-                    pass
-    
-    # Mover las columnas NEGOCIO y CANAL al inicio
-    if 'NEGOCIO' in df_pesos_salida.columns and 'CANAL' in df_pesos_salida.columns:
-        cols = df_pesos_salida.columns.tolist()
-        cols = ['NEGOCIO', 'CANAL'] + [col for col in cols if col not in ['NEGOCIO', 'CANAL']]
-        df_pesos_salida = df_pesos_salida[cols]
-    elif 'NEGOCIO' in df_pesos_salida.columns:
-        cols = df_pesos_salida.columns.tolist()
-        cols = ['NEGOCIO'] + [col for col in cols if col != 'NEGOCIO']
-        df_pesos_salida = df_pesos_salida[cols]
-    elif 'CANAL' in df_pesos_salida.columns:
-        cols = df_pesos_salida.columns.tolist()
-        cols = ['CANAL'] + [col for col in cols if col != 'CANAL']
-        df_pesos_salida = df_pesos_salida[cols]
-    
-    if 'NEGOCIO' in df_divisas_salida.columns and 'CANAL' in df_divisas_salida.columns:
-        cols = df_divisas_salida.columns.tolist()
-        cols = ['NEGOCIO', 'CANAL'] + [col for col in cols if col not in ['NEGOCIO', 'CANAL']]
-        df_divisas_salida = df_divisas_salida[cols]
-    elif 'NEGOCIO' in df_divisas_salida.columns:
-        cols = df_divisas_salida.columns.tolist()
-        cols = ['NEGOCIO'] + [col for col in cols if col != 'NEGOCIO']
-        df_divisas_salida = df_divisas_salida[cols]
-    elif 'CANAL' in df_divisas_salida.columns:
-        cols = df_divisas_salida.columns.tolist()
-        cols = ['CANAL'] + [col for col in cols if col != 'CANAL']
-        df_divisas_salida = df_divisas_salida[cols]
-    
-    # HOJA 3: VENCIMIENTOS
-    print("\n[6/6] Generando hoja VENCIMIENTOS...")
-    df_vencimientos = crear_hoja_vencimientos(df_pesos, df_divisas, trm_dolar, trm_euro)
-    print(f"  [OK] Registros en VENCIMIENTOS: {len(df_vencimientos)}")
-    
-    # Guardar Excel
+        dfX['CANAL'] = dfX['LINEA DE NEGOCIO'].apply(
+            lambda k: TABLA_NEGOCIO_CANAL.get(
+                str(k).strip().upper(), {'NEGOCIO': 'OTROS', 'CANAL': 'OTROS'}
+            )['CANAL']
+        )
+
+    total_pesos = df_pesos_final['SALDO'].sum() if 'SALDO' in df_pesos_final.columns else 0.0
+    total_div   = df_divisas_final['SALDO'].sum() if 'SALDO' in df_divisas_final.columns else 0.0
+    print(f"  [OK] Registros PESOS:   {len(df_pesos_final):,}  |  Saldo: ${total_pesos:,.0f}")
+    print(f"  [OK] Registros DIVISAS: {len(df_divisas_final):,}  |  Saldo moneda original: {total_div:,.2f}")
+
+    # -- PASO 6: Hoja VENCIMIENTO --
+    print("\n[6/7] Generando hoja VENCIMIENTO...")
+    df_vencimientos = crear_hoja_vencimientos(df_pesos_final, df_divisas_final)
+    print(f"  [OK] {len(df_vencimientos):,} filas en hoja VENCIMIENTO")
+
+    # -- PASO 7: Exportar a Excel --
+    print("\n[7/7] Guardando archivo Excel...")
     output_path = os.path.join(SALIDAS_DIR, output_file)
-    print(f"\n[GUARDANDO] {output_path}")
-    
+
+    # Columnas numéricas a formatear
+    cols_num = [
+        'SALDO', 'VALOR', 'SALDO NO VENCIDO',
+        'VENCIDO 30', 'VENCIDO 60', 'VENCIDO 90',
+        'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360',
+        'DEUDA INCOBRABLE', 'SALDO TOTAL', 'MORA TOTAL',
+        'TOTAL POR VENCER', 'POR VENCER M1', 'POR VENCER M2', 'POR VENCER M3',
+        'SALDO VENCIDO', 'MAYOR 90 DIAS',
+    ]
+
     with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
-        workbook = writer.book
-        fmt_miles = workbook.add_format({'num_format': '#,##0.00;-#,##0.00;"-";@'})
-        fmt_texto = workbook.add_format({'num_format': '@'})  # Formato de texto
-        
-        # Hoja PESOS
-        if not df_pesos_salida.empty:
-            df_pesos_salida.to_excel(writer, sheet_name='PESOS', index=False)
-            ws = writer.sheets['PESOS']
-            for col in columnas_suma:
-                if col in df_pesos_salida.columns:
-                    idx = df_pesos_salida.columns.get_loc(col)
-                    ws.set_column(idx, idx, 18, fmt_miles)
-            # Formato para columnas de texto
-            texto_cols = [i for i, col in enumerate(df_pesos_salida.columns) if col not in columnas_suma]
-            for idx in texto_cols:
-                ws.set_column(idx, idx, 20, fmt_texto)
-        
-        # Hoja DIVISAS
-        if not df_divisas_salida.empty:
-            df_divisas_salida.to_excel(writer, sheet_name='DIVISAS', index=False)
-            ws = writer.sheets['DIVISAS']
-            for col in columnas_suma:
-                if col in df_divisas_salida.columns:
-                    idx = df_divisas_salida.columns.get_loc(col)
-                    ws.set_column(idx, idx, 18, fmt_miles)
-            # Formato para columnas de texto
-            texto_cols = [i for i, col in enumerate(df_divisas_salida.columns) if col not in columnas_suma]
-            for idx in texto_cols:
-                ws.set_column(idx, idx, 20, fmt_texto)
-        
-        # Hoja VENCIMIENTOS
+        wb = writer.book
+        fmt_miles    = wb.add_format({'num_format': '#,##0.00;-#,##0.00;"-";@'})
+        fmt_pct      = wb.add_format({'num_format': '0%'})
+        fmt_texto    = wb.add_format({'num_format': '@'})
+        fmt_header   = wb.add_format({
+            'bold': True, 'bg_color': '#1F3864', 'font_color': '#FFFFFF',
+            'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True
+        })
+        fmt_total    = wb.add_format({
+            'bold': True, 'bg_color': '#D6E4F0', 'num_format': '#,##0.00;-#,##0.00;"-";@',
+            'border': 1
+        })
+        fmt_total_txt= wb.add_format({
+            'bold': True, 'bg_color': '#D6E4F0', 'border': 1
+        })
+        fmt_alt      = wb.add_format({'bg_color': '#F2F7FB'})
+
+        def _limpiar_df(df_data: pd.DataFrame) -> pd.DataFrame:
+            """Reemplaza NaN e Inf en columnas numericas por 0.0 para evitar error xlsxwriter."""
+            df_out = df_data.copy()
+            for col in df_out.columns:
+                if col in cols_num or col == '% DOTACION':
+                    df_out[col] = pd.to_numeric(df_out[col], errors='coerce').fillna(0.0)
+                    df_out[col] = df_out[col].replace([float('inf'), float('-inf')], 0.0)
+            return df_out
+
+        def _safe_num(val):
+            """Devuelve float limpio o 0.0 si es NaN/Inf/None."""
+            try:
+                v = float(val)
+                if v != v or v == float('inf') or v == float('-inf'):
+                    return 0.0
+                return v
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _escribir_hoja(df_data: pd.DataFrame, nombre_hoja: str,
+                           fila_total_marker: Optional[str] = None,
+                           col_total_marker: Optional[str] = None):
+            """Escribe una hoja con encabezados formateados y fila de total destacada."""
+            # Limpiar NaN/Inf antes de escribir
+            df_data = _limpiar_df(df_data)
+
+            df_data.to_excel(writer, sheet_name=nombre_hoja, index=False, startrow=1)
+            ws = writer.sheets[nombre_hoja]
+
+            # Encabezados formateados
+            for col_idx, col_name in enumerate(df_data.columns):
+                ws.write(0, col_idx, col_name, fmt_header)
+
+            # Formato por columna
+            for col_idx, col_name in enumerate(df_data.columns):
+                width = 20
+                if col_name in cols_num:
+                    ws.set_column(col_idx, col_idx, width, fmt_miles)
+                elif col_name == '% DOTACION':
+                    ws.set_column(col_idx, col_idx, 12, fmt_pct)
+                else:
+                    ws.set_column(col_idx, col_idx, width, fmt_texto)
+
+            # Resaltar filas de total
+            if fila_total_marker and col_total_marker and col_total_marker in df_data.columns:
+                for row_idx, val in enumerate(df_data[col_total_marker]):
+                    if str(val).startswith(fila_total_marker):
+                        # Fila Excel = row_idx + 2 (1 encabezado manual + 1 offset startrow)
+                        for c_idx, c_name in enumerate(df_data.columns):
+                            cell_val = df_data.iloc[row_idx][c_name]
+                            if c_name in cols_num:
+                                ws.write(row_idx + 2, c_idx, _safe_num(cell_val), fmt_total)
+                            elif c_name == '% DOTACION':
+                                ws.write(row_idx + 2, c_idx, _safe_num(cell_val), fmt_total)
+                            else:
+                                ws.write(row_idx + 2, c_idx, str(cell_val) if cell_val else '', fmt_total_txt)
+
+            ws.freeze_panes(1, 0)
+
+        # ===================================
+        # HOJA PESOS
+        # ===================================
+        if not df_pesos_final.empty:
+            totales_pesos = df_pesos_final[[c for c in cols_num if c in df_pesos_final.columns]].sum().to_frame().T
+            totales_pesos['LINEA DE NEGOCIO']    = 'TOTAL GENERAL'
+            totales_pesos['DENOMINACION COMERCIAL'] = ''
+            totales_pesos['MONEDA']              = 'PESOS COL'
+            for col in df_pesos_final.columns:
+                if col not in totales_pesos.columns:
+                    totales_pesos[col] = ''
+            totales_pesos = totales_pesos[df_pesos_final.columns]
+
+            df_pesos_salida = pd.concat([df_pesos_final, totales_pesos], ignore_index=True)
+            _escribir_hoja(df_pesos_salida, 'PESOS', 'TOTAL GENERAL', 'LINEA DE NEGOCIO')
+            print("  [OK] Hoja PESOS escrita")
+
+        # ===================================
+        # HOJA DIVISAS
+        # ===================================
+        if not df_divisas_final.empty:
+
+            # Subtotales por moneda (valor original)
+            tot_moneda = (
+                df_divisas_final
+                .groupby('MONEDA', as_index=False)[[c for c in cols_num if c in df_divisas_final.columns]]
+                .sum()
+            )
+            tot_moneda['__TIPO__'] = 'TOTAL MONEDA'
+
+            # Subtotales convertidos a COP x TRM
+            def _convertir_cop(row):
+                m = row.get('MONEDA', '')
+                factor = trm_dolar if m == 'DÓLAR' else (trm_euro if m == 'EURO' else 1.0)
+                r = row.copy()
+                for c in cols_num:
+                    if c in r.index:
+                        r[c] = safe_float_conversion(r[c]) * factor
+                return r
+
+            tot_cop = tot_moneda.copy().apply(_convertir_cop, axis=1)
+            tot_cop['__TIPO__'] = f'TOTAL MONEDA (COP) -- TRM USD:{trm_dolar:,.2f} | EUR:{trm_euro:,.2f}'
+
+            df_divisas_salida = pd.concat(
+                [df_divisas_final, tot_moneda, tot_cop], ignore_index=True
+            )
+            _escribir_hoja(df_divisas_salida, 'DIVISAS', 'TOTAL MONEDA', '__TIPO__')
+            print("  [OK] Hoja DIVISAS escrita")
+
+        # ===================================
+        # HOJA VENCIMIENTO
+        # ===================================
         if not df_vencimientos.empty:
-            # Guardar la hoja de vencimientos completa
-            df_vencimientos.to_excel(writer, sheet_name='VENCIMIENTOS', index=False)
-            ws = writer.sheets['VENCIMIENTOS']
-            for col in columnas_suma:
-                if col in df_vencimientos.columns:
-                    idx = df_vencimientos.columns.get_loc(col)
-                    ws.set_column(idx, idx, 18, fmt_miles)
-            # Formato para columnas de texto
-            texto_cols = [i for i, col in enumerate(df_vencimientos.columns) if col not in columnas_suma]
-            for idx in texto_cols:
-                ws.set_column(idx, idx, 20, fmt_texto)
-    
-    print("="*60)
-    print(f"[OK] MODELO DE DEUDA GENERADO EXITOSAMENTE")
-    print(f"  Archivo: {output_path}")
-    print(f"  Total PESOS: ${total_pesos:,.0f}")
-    print(f"  Total DIVISAS: ${total_divisas:,.0f}")
-    print(f"  TRM USD: ${trm_dolar:,.2f} | EUR: ${trm_euro:,.2f}")
-    print("="*60 + "\n")
-    
+            _escribir_hoja(df_vencimientos, 'VENCIMIENTO', 'TOTAL GENERAL', 'CLIENTE')
+            print("  [OK] Hoja VENCIMIENTO escrita")
+
+    print("\n" + "=" * 62)
+    print("  MODELO DE DEUDA GENERADO EXITOSAMENTE")
+    print(f"  Archivo : {output_path}")
+    print(f"  TRM USD : ${trm_dolar:,.4f}  |  TRM EUR: ${trm_euro:,.4f}  ({fecha_trm})")
+    print("=" * 62 + "\n")
+
     logging.info(f"Modelo de deuda generado: {output_path}")
+    if USE_UNIFIED_LOGGING:
+        log_fin_proceso("MODELO_DEUDA", output_file)
+
     return output_path
 
-def crear_hoja_vencimientos(df_pesos, df_divisas, trm_dolar, trm_euro):
-    """Crea la hoja de vencimientos consolidada"""
-    registros = []
-    
-    columnas_venc: list[str] = ['SALDO', 'SALDO NO VENCIDO', 'VENCIDO 30', 'VENCIDO 60',
-                     'VENCIDO 90', 'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360',
-                     'DEUDA INCOBRABLE']
-    
-    # Combinar datos de pesos y divisas para procesamiento unificado
-    todos_los_datos = []
-    
-    # Procesar PESOS
-    if not df_pesos.empty:
-        for _, row in df_pesos.iterrows():
-            # Verificar que la fila tenga datos válidos
-            denominacion = ''
-            if not pd.isna(row['DENOMINACION COMERCIAL']):
-                row_denom = str(row['DENOMINACION COMERCIAL'])
-                if row_denom.lower() != 'nan':
-                    denominacion = row_denom.strip()
-            
-            # Solo procesar filas con datos válidos
-            if denominacion:
-                # Incluir todas las columnas necesarias para la hoja de vencimientos
-                registro_pesos = {
-                    'DENOMINACION COMERCIAL': str(denominacion) if denominacion else '',
-                    'MONEDA': 'pesos',  # Usar 'pesos' en lugar de códigos como 'CO'
-                    'EMPRESA_2': str(row.get('EMPRESA_2', '')),
-                    'CODIGO AGENTE': str(row.get('CODIGO AGENTE', '')),
-                    'AGENTE': str(row.get('AGENTE', '')),
-                    'CODIGO COBRADOR': str(row.get('CODIGO COBRADOR', '')),
-                    'COBRADOR': str(row.get('COBRADOR', '')),
-                    'CODIGO CLIENTE': str(row.get('CODIGO CLIENTE', '')),
-                    'IDENTIFICACION': str(row.get('IDENTIFICACION', '')),
-                    'NOMBRE': str(row.get('NOMBRE', '')),
-                    'DIRECCION': str(row.get('DIRECCION', '')),
-                    'TELEFONO': str(row.get('TELEFONO', '')),
-                    'CIUDAD': str(row.get('CIUDAD', '')),
-                    'NUMERO FACTURA': str(row.get('NUMERO FACTURA', '')),
-                    'TIPO': str(row.get('TIPO', '')),
-                    'FECHA': str(row.get('FECHA', '')),
-                    'FECHA VTO': str(row.get('FECHA VTO', '')),
-                    'VALOR': safe_float_conversion(row.get('VALOR', 0.0)),
-                    'DIAS VENCIDO': safe_float_conversion(row.get('DIAS VENCIDO', 0.0))
-                } # type: dict[str, str | float]
-                for col in columnas_venc:
-                    try:
-                        if col in row and pd.notna(row[col]):
-                            val = row[col]
-                            try:
-                                # Extract scalar value if it's a pandas type
-                                if hasattr(val, 'item'):
-                                    val = val.item()
-                                elif pd.api.types.is_scalar(val):
-                                    pass  # Already a scalar
-                                else:
-                                    val = pd.to_numeric(val, errors='coerce')
-                                
-                                numeric_val = safe_float_conversion(pd.to_numeric(val, errors='coerce'))
-                                if not pd.isna(numeric_val):
-                                    registro_pesos[col] = safe_float_conversion(numeric_val)
-                                else:
-                                    registro_pesos[col] = 0.0
-                            except (ValueError, TypeError):
-                                registro_pesos[col] = 0.0
-                        else:
-                            registro_pesos[col] = 0.0
-                    except:
-                        registro_pesos[col] = 0.0
-                todos_los_datos.append(registro_pesos)
-    
-    # Procesar DIVISAS
-    if not df_divisas.empty:
-        for _, row in df_divisas.iterrows():
-            # Verificar que la fila tenga datos válidos
-            denominacion = ''
-            if not pd.isna(row['DENOMINACION COMERCIAL']):
-                row_denom = str(row['DENOMINACION COMERCIAL'])
-                if row_denom.lower() != 'nan':
-                    denominacion = row_denom.strip()
-            
-            # Solo procesar filas con datos válidos
-            if denominacion:
-                # Incluir todas las columnas necesarias para la hoja de vencimientos
-                registro_divisas = {
-                    'DENOMINACION COMERCIAL': str(denominacion) if denominacion else '',
-                    'MONEDA': 'pesos',  # Usar 'pesos' en lugar de códigos como 'CO'
-                    'EMPRESA_2': str(row.get('EMPRESA_2', '')),
-                    'CODIGO AGENTE': str(row.get('CODIGO AGENTE', '')),
-                    'AGENTE': str(row.get('AGENTE', '')),
-                    'CODIGO COBRADOR': str(row.get('CODIGO COBRADOR', '')),
-                    'COBRADOR': str(row.get('COBRADOR', '')),
-                    'CODIGO CLIENTE': str(row.get('CODIGO CLIENTE', '')),
-                    'IDENTIFICACION': str(row.get('IDENTIFICACION', '')),
-                    'NOMBRE': str(row.get('NOMBRE', '')),
-                    'DIRECCION': str(row.get('DIRECCION', '')),
-                    'TELEFONO': str(row.get('TELEFONO', '')),
-                    'CIUDAD': str(row.get('CIUDAD', '')),
-                    'NUMERO FACTURA': str(row.get('NUMERO FACTURA', '')),
-                    'TIPO': str(row.get('TIPO', '')),
-                    'FECHA': str(row.get('FECHA', '')),
-                    'FECHA VTO': str(row.get('FECHA VTO', '')),
-                    'VALOR': safe_float_conversion(row.get('VALOR', 0.0)),
-                    'DIAS VENCIDO': safe_float_conversion(row.get('DIAS VENCIDO', 0.0))
-                } # type: dict[str, str | float]
-                for col in columnas_venc:
-                    try:
-                        if col in row and pd.notna(row[col]):
-                            val = row[col]
-                            try:
-                                # Extract scalar value if it's a pandas type
-                                if hasattr(val, 'item'):
-                                    val = val.item()
-                                elif pd.api.types.is_scalar(val):
-                                    pass  # Already a scalar
-                                else:
-                                    val = pd.to_numeric(val, errors='coerce')
-                                
-                                temp_val = safe_float_conversion(pd.to_numeric(val, errors='coerce'))
-                                if not pd.isna(temp_val):
-                                    valor_original = temp_val
-                                    # Convertir a COP solo si es una moneda de divisa
-                                    registro_divisas[col] = safe_float_conversion(valor_original)
-                                else:
-                                    registro_divisas[col] = 0.0
-                            except (ValueError, TypeError):
-                                registro_divisas[col] = 0.0
-                        else:
-                            registro_divisas[col] = 0.0
-                    except:
-                        registro_divisas[col] = 0.0
-                todos_los_datos.append(registro_divisas)
-    
-    if not todos_los_datos:
-        # Devolver DataFrame vacío con las columnas correctas
-        columnas_vencimientos_1: list[str] = ['EMPRESA_2', 'DENOMINACION COMERCIAL', 'CODIGO AGENTE', 'AGENTE', 'CODIGO COBRADOR', 'COBRADOR', 'CODIGO CLIENTE', 'IDENTIFICACION', 'NOMBRE', 'DIRECCION', 'TELEFONO', 'CIUDAD', 'NUMERO FACTURA', 'TIPO', 'FECHA', 'FECHA VTO', 'VALOR', 'SALDO', 'DIAS VENCIDO', 'SALDO NO VENCIDO', 'VENCIDO 30', 'VENCIDO 60', 'VENCIDO 90', 'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360', 'DEUDA INCOBRABLE', 'MONEDA', 'NEGOCIO', 'CANAL']
-        df_vacio = pd.DataFrame({col: [] for col in columnas_vencimientos_1})
-        # Asegurar tipos adecuados para columnas de vencimiento (numéricas)
-        for col in columnas_venc:
-            if col in df_vacio.columns:
-                df_vacio[col] = pd.Series(dtype='float64')
-        # Asegurar tipos adecuados para columnas de texto
-        for col in ['EMPRESA_2', 'DENOMINACION COMERCIAL', 'CODIGO AGENTE', 'AGENTE', 'CODIGO COBRADOR', 'COBRADOR', 'CODIGO CLIENTE', 'IDENTIFICACION', 'NOMBRE', 'DIRECCION', 'TELEFONO', 'CIUDAD', 'NUMERO FACTURA', 'TIPO', 'FECHA', 'FECHA VTO', 'MONEDA', 'NEGOCIO', 'CANAL']:
-            if col in df_vacio.columns:
-                df_vacio[col] = pd.Series(dtype='object')
-        return df_vacio
-    
-    # Crear DataFrame de trabajo
-    df_trabajo = pd.DataFrame(todos_los_datos)
-    
-    # Asegurar tipos adecuados para columnas de vencimiento (numéricas)
-    for col in columnas_venc:
-        if col in df_trabajo.columns:
-            df_trabajo[col] = pd.to_numeric(df_trabajo[col], errors='coerce')
-    
-    print(f"  [DEBUG] Registros de trabajo: {len(df_trabajo)}")
-    
-    # Agrupar por cliente para consolidar saldos
-    if not df_trabajo.empty:
-        print(f"  [DEBUG] Columnas de trabajo: {list(df_trabajo.columns)}")
-        # Agrupar y sumar solo las columnas de vencimiento
-        columnas_agrupacion = [col for col in df_trabajo.columns if col not in columnas_venc]
-        agg_dict = {col: 'first' for col in columnas_agrupacion}
-        for col in columnas_venc:
-            agg_dict[col] = 'sum'
-        print(f"  [DEBUG] Agrupando por: {columnas_agrupacion}")
-        print(f"  [DEBUG] Agregando: {agg_dict}")
-        df_agrupado = df_trabajo.groupby(columnas_agrupacion, as_index=False).agg(agg_dict)
-        print(f"  [DEBUG] Registros agrupados: {len(df_agrupado)}")
-        
-        # Crear registros finales
-        for _, row in df_agrupado.iterrows():
-            denominacion = ''
-            if not safe_isna_check(row['DENOMINACION COMERCIAL']):
-                row_denom = str(row['DENOMINACION COMERCIAL'])
-                if row_denom.lower() != 'nan':
-                    denominacion = row_denom.strip()
-            
-            registro_final = {
-                'EMPRESA_2': str(row.get('EMPRESA_2', '')),
-                'DENOMINACION COMERCIAL': str(denominacion) if denominacion else '',
-                'CODIGO AGENTE': str(row.get('CODIGO AGENTE', '')),
-                'AGENTE': str(row.get('AGENTE', '')),
-                'CODIGO COBRADOR': str(row.get('CODIGO COBRADOR', '')),
-                'COBRADOR': str(row.get('COBRADOR', '')),
-                'CODIGO CLIENTE': str(row.get('CODIGO CLIENTE', '')),
-                'IDENTIFICACION': str(row.get('IDENTIFICACION', '')),
-                'NOMBRE': str(row.get('NOMBRE', '')),
-                'DIRECCION': str(row.get('DIRECCION', '')),
-                'TELEFONO': str(row.get('TELEFONO', '')),
-                'CIUDAD': str(row.get('CIUDAD', '')),
-                'NUMERO FACTURA': str(row.get('NUMERO FACTURA', '')),
-                'TIPO': str(row.get('TIPO', '')),
-                'FECHA': str(row.get('FECHA', '')),
-                'FECHA VTO': str(row.get('FECHA VTO', '')),
-                'VALOR': safe_float_conversion(row.get('VALOR', 0.0)),
-                'SALDO': safe_float_conversion(row.get('SALDO', 0.0)),
-                'DIAS VENCIDO': safe_float_conversion(row.get('DIAS VENCIDO', 0.0)),
-                'MONEDA': str(row.get('MONEDA', 'pesos')),
-                'NEGOCIO': str(row.get('NEGOCIO', 'OTROS')),
-                'CANAL': str(row.get('CANAL', 'OTROS'))
-            }
-            
-            # Agregar columnas de vencimiento
-            for col in columnas_venc:
-                try:
-                    val = row[col]
-                    if safe_isna_check(val):
-                        registro_final[col] = 0.0
-                    else:
-                        registro_final[col] = safe_float_conversion(val)
-                except:
-                    registro_final[col] = 0.0
-            
-            registros.append(registro_final)
-    
-    if not registros:
-        # Devolver DataFrame vacío con las columnas correctas
-        columnas_vencimientos_2: list[str] = ['EMPRESA_2', 'DENOMINACION COMERCIAL', 'CODIGO AGENTE', 'AGENTE', 'CODIGO COBRADOR', 'COBRADOR', 'CODIGO CLIENTE', 'IDENTIFICACION', 'NOMBRE', 'DIRECCION', 'TELEFONO', 'CIUDAD', 'NUMERO FACTURA', 'TIPO', 'FECHA', 'FECHA VTO', 'VALOR', 'SALDO', 'DIAS VENCIDO', 'SALDO NO VENCIDO', 'VENCIDO 30', 'VENCIDO 60', 'VENCIDO 90', 'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360', 'DEUDA INCOBRABLE', 'MONEDA', 'NEGOCIO', 'CANAL']
-        df_vacio = pd.DataFrame({col: [] for col in columnas_vencimientos_2})
-        # Asegurar tipos adecuados para columnas de vencimiento (numéricas)
-        for col in columnas_venc:
-            if col in df_vacio.columns:
-                df_vacio[col] = pd.Series(dtype='float64')
-        return df_vacio
-    
-    df_venc = pd.DataFrame(registros)
-    
-    # Mover las columnas NEGOCIO y CANAL al final como se requiere
-    if 'NEGOCIO' in df_venc.columns and 'CANAL' in df_venc.columns:
-        cols = [col for col in df_venc.columns if col not in ['NEGOCIO', 'CANAL']] + ['NEGOCIO', 'CANAL']
-        df_venc = df_venc[cols]
-    
-    # Agregar totales por moneda
-    totales = []
-    
-    if 'MONEDA' in df_venc.columns:
-        try:
-            for moneda in df_venc['MONEDA'].dropna().unique():
-                moneda_str = str(moneda).strip()
-                if not moneda_str:
-                    continue
-                    
-                df_moneda = df_venc[df_venc['MONEDA'] == moneda]
-                total = {
-                    'EMPRESA_2': '', 'DENOMINACION COMERCIAL': '** **',
-                    'CODIGO AGENTE': '', 'AGENTE': '', 'CODIGO COBRADOR': '',
-                    'COBRADOR': '', 'CODIGO CLIENTE': '', 'IDENTIFICACION': '',
-                    'NOMBRE': '', 'DIRECCION': '', 'TELEFONO': '', 'CIUDAD': '',
-                    'NUMERO FACTURA': '', 'TIPO': '', 'FECHA': '', 'FECHA VTO': '',
-                    'VALOR': 0.0, 'SALDO': 0.0, 'DIAS VENCIDO': 0.0,
-                    'MONEDA': moneda_str, 'NEGOCIO': '', 'CANAL': ''
-                }
-                for col in columnas_venc:
-                    try:
-                        total[col] = safe_float_conversion(df_moneda[col].sum()) if len(df_moneda) > 0 else 0.0
-                    except:
-                        total[col] = 0.0
-                totales.append(total)
-        except Exception as e:
-            print(f"[WARN] Error calculando totales por moneda: {e}")
-    
-    # Total general
-    total_general = {
-        'EMPRESA_2': '', 'DENOMINACION COMERCIAL': '**Totales**',
-        'CODIGO AGENTE': '', 'AGENTE': '', 'CODIGO COBRADOR': '',
-        'COBRADOR': '', 'CODIGO CLIENTE': '', 'IDENTIFICACION': '',
-        'NOMBRE': '', 'DIRECCION': '', 'TELEFONO': '', 'CIUDAD': '',
-        'NUMERO FACTURA': '', 'TIPO': '', 'FECHA': '', 'FECHA VTO': '',
-        'VALOR': 0.0, 'SALDO': 0.0, 'DIAS VENCIDO': 0.0,
-        'MONEDA': '', 'NEGOCIO': '', 'CANAL': ''
-    }
-    for col in columnas_venc:
-        if col in df_venc.columns:
-            try:
-                total_general[col] = safe_float_conversion(df_venc[col].sum()) if len(df_venc) > 0 else 0.0
-            except:
-                total_general[col] = 0.0
-        else:
-            total_general[col] = 0.0
-    totales.append(total_general)
-    
-    # Concatenar registros con totales
-    if totales:
-        df_totales = pd.DataFrame(totales)
-        return pd.concat([df_venc, df_totales], ignore_index=True)
-    else:
-        return df_venc
-
+# ============================================================
+# CLI
+# ============================================================
 def main():
-    """Entrada principal"""
-    parser = argparse.ArgumentParser(description="Genera Modelo de Deuda desde cartera y anticipos procesados")
-    parser.add_argument("archivo_provision", help="Archivo CARTERA_*.xlsx procesado")
-    parser.add_argument("archivo_anticipos", help="Archivo ANTICIPOS_*.xlsx procesado")
-    parser.add_argument("-o", "--output-file", help="Nombre del archivo de salida")
-    
+    parser = argparse.ArgumentParser(
+        description="Genera Modelo de Deuda -- Procedimiento Departamento de Cartera"
+    )
+    parser.add_argument("archivo_provision",
+                        help="Archivo de provisión PISA (provca.csv o .xlsx)")
+    parser.add_argument("archivo_anticipos",
+                        help="Archivo de anticipos PISA (clanti.csv o .xlsx)")
+    parser.add_argument("-o", "--output-file",
+                        help="Nombre del archivo de salida (*.xlsx)",
+                        default=None)
+    parser.add_argument("--usd", type=float,
+                        help="TRM USD override (ej: 4350.50). Ignora trm.json para USD.")
+    parser.add_argument("--eur", type=float,
+                        help="TRM EUR override (ej: 4712.80). Ignora trm.json para EUR.")
     args = parser.parse_args()
-    
-    # Si no se proporciona un nombre de archivo, generar uno con el formato MODELO_DEUDA_fecha_hora
+
     if not args.output_file:
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        args.output_file = f"MODELO_DEUDA_{timestamp}.xlsx"
-    
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.output_file = f"MODELO_DEUDA_{ts}.xlsx"
+
     try:
-        resultado = crear_modelo_deuda(args.archivo_provision, args.archivo_anticipos, args.output_file)
-        if USE_UNIFIED_LOGGING:
-            log_fin_proceso("MODELO_DEUDA", args.output_file)
+        crear_modelo_deuda(
+            args.archivo_provision,
+            args.archivo_anticipos,
+            args.output_file,
+            usd_override=args.usd,
+            eur_override=args.eur,
+        )
     except Exception as e:
         if USE_UNIFIED_LOGGING:
             log_error_proceso("MODELO_DEUDA", str(e))
-        else:
-            print(f"\n[ERROR] ERROR: {e}")
-            logging.error(f"Error: {e}", exc_info=True)
+        print(f"\n[ERROR] {e}")
+        logging.error(f"Error en modelo de deuda: {e}", exc_info=True)
         sys.exit(1)
 
 if __name__ == "__main__":

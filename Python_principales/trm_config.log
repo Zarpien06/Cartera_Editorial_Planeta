@@ -1,0 +1,6 @@
+2026-02-18 08:24:38,696 - SISTEMA_CARTERA - INFO - [MODELO_DEUDA] [INICIO] archivo: C:\wamp64\www\cartera_v3.0.0\front_php\uploads\CARTERA_20260217_135651_6995bd91820663.41654758.xlsx + C:\wamp64\www\cartera_v3.0.0\front_php\uploads\ANTICIPOS_FEBRERO_2026_6995bd9182d444.44510514.xlsx | timestamp: 08:24:38
+2026-02-18 08:24:38,696 - trm_config - INFO - TRM no es del día actual. Actualizando automáticamente...
+2026-02-18 08:24:40,201 - trm_config - INFO - TRM oficial obtenida: 3664.26
+2026-02-18 08:24:40,224 - trm_config - INFO - TRM actualizada y guardada correctamente
+2026-02-18 08:24:49,467 - root - INFO - Modelo de deuda generado: C:\wamp64\www\cartera_v3.0.0\Python_principales\salidas\MODELO_DEUDA_20260218_082438.xlsx
+2026-02-18 08:24:49,484 - SISTEMA_CARTERA - INFO - [MODELO_DEUDA] [FINALIZADO] archivo_salida: MODELO_DEUDA_20260218_082438.xlsx | timestamp: 08:24:49

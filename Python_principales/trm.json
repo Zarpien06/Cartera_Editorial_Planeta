@@ -1,7 +1,8 @@
 {
-    "usd": 3757.08,
-    "eur": 4412.8,
-    "fecha": "2026-02-17 16:34:58",
-    "actualizado_por": "sistema_php",
-    "origen": "json"
+  "usd": 3664.26,
+  "eur": 4412.8,
+  "fecha": "2026-02-18 08:24:40",
+  "actualizado_por": "api_oficial",
+  "origen": "api",
+  "version": "1.0"
 }
