@@ -354,35 +354,33 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     info("✓ % Dotación y Valor Dotación calculados")
 
     # -------------------------
-    # 15. COLUMNAS DE LOS ÚLTIMOS 6 MESES VENCIDOS
+    # 15. COLUMNAS DE LOS ÚLTIMOS 6 MESES VENCIDOS (MES 1 = MES CIERRE)
     # -------------------------
+    
     mes_cierre = fecha_cierre.month
     anio_cierre = fecha_cierre.year
     
-    meses_atras = []
-    for i in range(6, 0, -1):
+    for i in range(0, 6):  # 0 = mes cierre, 1 = mes anterior, etc
         mes_calc = mes_cierre - i
         anio_calc = anio_cierre
+    
         if mes_calc <= 0:
             mes_calc += 12
             anio_calc -= 1
-        meses_atras.append((anio_calc, mes_calc))
     
-    # Crear columnas para cada mes
-    for i, (anio, mes) in enumerate(meses_atras, 1):
-        nombre_col = f"VTO MES {i}"
-        # Facturas vencidas en ese mes específico
+        nombre_col = f"VTO MES {i+1}"
+    
         df[nombre_col] = df.apply(
             lambda row: row["SALDO"] if (
-                pd.notna(row["FECHA VTO_TEMP"]) and 
-                row["FECHA VTO_TEMP"].year == anio and 
-                row["FECHA VTO_TEMP"].month == mes and
-                row["DIAS VENCIDO"] > 0
+                pd.notna(row["FECHA VTO_TEMP"]) and
+                row["FECHA VTO_TEMP"].year == anio_calc and
+                row["FECHA VTO_TEMP"].month == mes_calc and
+                row["FECHA VTO_TEMP"] <= fecha_cierre
             ) else 0,
             axis=1
         )
     
-    info("✓ Columnas de últimos 6 meses vencidos creadas")
+    info("✓ Columnas VTO MES 1-6 creadas correctamente (MES 1 = MES CIERRE)")
 
     # -------------------------
     # 16. VALOR >= 180 DÍAS VENCIDOS
