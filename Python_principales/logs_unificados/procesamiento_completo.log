@@ -1895,3 +1895,5 @@ Archivo generado: C:\wamp64\www\cartera_v3.0.0\Python_principales\salidas\CARTER
 [SISTEMA_CARTERA] [INFO] [MODELO_DEUDA] [FINALIZADO] archivo_salida: MODELO_DEUDA_20260311_160442.xlsx | timestamp: 16:04:46 [config_logging.py:71]
 [SISTEMA_CARTERA] [INFO] [MODELO_DEUDA] [INICIO] archivo: C:\wamp64\www\cartera_v3.0.0\front_php\uploads\02-2026_CARTERA_A_CIERRE_FEBRERO_2025-_MODELO_6_69b1defe4a90e7.30624344.xlsx + C:\wamp64\www\cartera_v3.0.0\front_php\uploads\ANTICIPOS_MARZO_2026__15__69b1defe4bb281.88141841.xlsx | timestamp: 16:30:40 [config_logging.py:71]
 [SISTEMA_CARTERA] [INFO] [MODELO_DEUDA] [FINALIZADO] archivo_salida: MODELO_DEUDA_20260311_163040.xlsx | timestamp: 16:30:44 [config_logging.py:71]
+[SISTEMA_CARTERA] [INFO] [MODELO_DEUDA] [INICIO] archivo: C:\wamp64\www\cartera_v3.0.0\front_php\uploads\CARTERA_20260312_162124_69b32ee0ee2bc9.96208285.xlsx + C:\wamp64\www\cartera_v3.0.0\front_php\uploads\ANTICIPOS_MARZO_2026__15__69b32ee0ee7073.34931072.xlsx | timestamp: 16:23:46 [config_logging.py:71]
+[SISTEMA_CARTERA] [INFO] [MODELO_DEUDA] [FINALIZADO] archivo_salida: MODELO_DEUDA_20260312_162346.xlsx | timestamp: 16:24:01 [config_logging.py:71]

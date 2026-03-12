@@ -679,6 +679,67 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     info("✓ Columnas internas eliminadas del archivo final")
 
     # -------------------------
+    # ORDEN FINAL DE COLUMNAS
+    # -------------------------
+    
+    orden_columnas = [
+    "EMPRESA",
+    "ACTIVIDAD",
+    "EMPRESA CODIGO AGENTE",
+    "CODIGO AGENTE",
+    "AGENTE",
+    "CODIGO COBRADOR",
+    "COBRADOR",
+    "CODIGO CLIENTE",
+    "IDENTIFICACION",
+    "NOMBRE",
+    "DENOMINACION COMERCIAL",
+    "DIRECCION",
+    "TELEFONO",
+    "CIUDAD",
+    "NUMERO FACTURA",
+    "TIPO",
+    "FECHA",
+    "FECHA VTO",
+    "DIA VTO",
+    "MES VTO",
+    "AÑO VTO",
+    "VALOR",
+    "SALDO",
+    "SALDO VENCIDO",
+    "DIAS VENCIDO",
+    "DIAS POR VENCER",
+    "% DOTACION",
+    "VALOR DOTACION",
+    "VTO MES 1",
+    "VTO MES 2",
+    "VTO MES 3",
+    "VTO MES 4",
+    "VTO MES 5",
+    "VTO MES 6",
+    "VALOR >= 180 DIAS",
+    "MORA TOTAL",
+    "POR VENCER MES 1",
+    "POR VENCER MES 2",
+    "POR VENCER MES 3",
+    "MAYOR 90 DIAS POR VENCER",
+    "TOTAL POR VENCER",
+    "SALDO NO VENCIDO",
+    "VENCIDO 30",
+    "VENCIDO 60",
+    "VENCIDO 90",
+    "VENCIDO 180",
+    "VENCIDO 360",
+    "VENCIDO +360",
+    "TOTAL POR VENCER",
+    "DEUDA INCOBRABLE"
+    ]
+    
+    df = df[[c for c in orden_columnas if c in df.columns]]
+    
+    info("✓ Columnas ordenadas según formato final PROVCA")
+    
+    # -------------------------
     # EXPORTAR EXCEL CON FORMATO USANDO XlsxWriter
     # -------------------------
     info("\n=== GENERANDO ARCHIVO EXCEL ===")
