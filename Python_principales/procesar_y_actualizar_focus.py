@@ -16,6 +16,7 @@ import openpyxl
 from openpyxl import load_workbook, Workbook
 from openpyxl.worksheet.worksheet import Worksheet
 from openpyxl.styles import PatternFill
+
 # Importar xlrd y xlwt para manejo de archivos .xls
 try:
     import xlrd

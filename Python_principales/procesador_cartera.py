@@ -176,7 +176,30 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     # -------------------------
     df.rename(columns=RENOMBRES, inplace=True)
     info("✓ Columnas renombradas")
-
+    
+    # -------------------------
+    # LIMPIAR ESPACIOS EN CAMPOS DE TEXTO
+    # -------------------------
+    columnas_texto = [
+        "NOMBRE",
+        "DENOMINACION COMERCIAL",
+        "AGENTE",
+        "COBRADOR",
+        "CIUDAD",
+        "DIRECCION"
+    ]
+    
+    for col in columnas_texto:
+        if col in df.columns:
+            df[col] = (
+                df[col]
+                .astype(str)
+                .str.strip()                       # Quitar espacios inicio/fin
+                .str.replace(r'\s+', ' ', regex=True)  # Quitar dobles espacios internos
+            )
+    
+    info("✓ Espacios limpiados en nombres y textos")
+    
     # -------------------------
     # 4. ELIMINAR FILA PL30 (EMPRESA=PL y ACTIVIDAD=30)
     # -------------------------
@@ -212,16 +235,7 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
         warning("⚠️  No se encontraron registros PL30 para eliminar")
         warning("    Verificar que el CSV tenga registros con EMPRESA='PL' y ACTIVIDAD='30'")    
         
-    # -----------------------------------------
-    # ELIMINAR ACTIVIDAD 80 COMPLETAMENTE
-    # -----------------------------------------
-    reg_80 = len(df[df["ACTIVIDAD"] == "80"])
-    
-    if reg_80 > 0:
-        df = df[df["ACTIVIDAD"] != "80"]
-        info(f"✓ Eliminados {reg_80} registros de ACTIVIDAD 80")
-    else:
-        info("✓ No se encontraron registros de ACTIVIDAD 80")
+ 
     
     # -------------------------
     # 5. UNIFICAR NOMBRES EN DENOMINACION COMERCIAL
@@ -324,24 +338,37 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     )
     
      
-     # -------------------------
-     # 12. REORDENAR COLUMNAS
-     # -------------------------
+    # -------------------------
+    # 12. REORDENAR COLUMNAS
+    # -------------------------
     columnas = list(df.columns)
-     
+    
     if "SALDO VENCIDO" in columnas:
-         columnas.remove("VALOR")
-         columnas.remove("SALDO")
-     
-         idx = columnas.index("SALDO VENCIDO")
-     
-         columnas.insert(idx, "SALDO")
-         columnas.insert(idx, "VALOR")
-     
+    
+        # Quitar columnas para reinsertarlas
+        columnas.remove("VALOR")
+        columnas.remove("SALDO")
+    
+        if "DIAS VENCIDO" in columnas:
+            columnas.remove("DIAS VENCIDO")
+        
+        if "DIAS POR VENCER" in columnas:
+            columnas.remove("DIAS POR VENCER")
+    
+        idx = columnas.index("SALDO VENCIDO")
+    
+        # Insertar antes de SALDO VENCIDO
+        columnas.insert(idx, "SALDO")
+        columnas.insert(idx, "VALOR")
+    
+        # Insertar después de SALDO VENCIDO
+        columnas.insert(idx + 3, "DIAS VENCIDO")
+        columnas.insert(idx + 4, "DIAS POR VENCER")
+    
     df = df[columnas]
-     
-    info("✓ Columnas reordenadas correctamente")
-     
+    
+    info("✓ Columnas reordenadas correctamente (DIAS VENCIDO y DIAS POR VENCER después de SALDO VENCIDO)")
+    
     # -------------------------
     # 13. CALCULAR % DOTACIÓN (100% si días vencidos >= 180)
     # -------------------------
@@ -388,11 +415,6 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     df["VALOR >= 180 DIAS"] = df["SALDO"].where(df["DIAS VENCIDO"] >= 180, 0)
 
     # -------------------------
-    # 17. CALCULAR MORA TOTAL
-    # -------------------------
-    df["MORA TOTAL"] = df["SALDO VENCIDO"]
-
-    # -------------------------
     # 18. COLUMNAS POR VENCER - PRÓXIMOS 3 MESES
     # -------------------------
     meses_adelante = []
@@ -426,21 +448,29 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     df["MAYOR 90 DIAS POR VENCER"] = df["SALDO"].where(df["DIAS POR VENCER"] >= 90, 0)
     
     print(df.columns)
-
-    # -------------------------
-    # 20. DIVISIÓN CONTABLE EXACTA DEL SALDO (CORRECTO)
-    # -------------------------
     
-    # Redondear base
+    # -------------------------
+    # 20. RANGOS DE VENCIMIENTO (se calculan PRIMERO para usarlos en MORA TOTAL)
+    # -------------------------
     df["SALDO"] = df["SALDO"].round(2)
-    
-    # MORA REAL = lo que realmente está vencido
-    df["MORA TOTAL"] = df["SALDO VENCIDO"].round(2)
-    
-    # POR VENCER = lo que no está vencido
-    df["TOTAL POR VENCER"] = (
-        df["SALDO"] - df["MORA TOTAL"]
+
+    df["SALDO NO VENCIDO"] = df["SALDO"].where(df["DIAS VENCIDO"].between(0, 29), 0)
+    df["VENCIDO 30"]       = df["SALDO"].where(df["DIAS VENCIDO"].between(30, 59), 0)
+    df["VENCIDO 60"]       = df["SALDO"].where(df["DIAS VENCIDO"].between(60, 89),  0)
+    df["VENCIDO 90"]       = df["SALDO"].where(df["DIAS VENCIDO"].between(90, 179), 0)
+    df["VENCIDO 180"]      = df["SALDO"].where(df["DIAS VENCIDO"].between(180, 359), 0)
+    df["VENCIDO 360"]      = df["SALDO"].where(df["DIAS VENCIDO"].between(360, 369), 0)
+    df["VENCIDO +360"]     = df["SALDO"].where(df["DIAS VENCIDO"] >= 370, 0)
+
+    # MORA TOTAL = VTO MES 1+2+3+4+5+6 + VALOR >= 180 DIAS
+    df["MORA TOTAL"] = (
+        df["VTO MES 1"] + df["VTO MES 2"] + df["VTO MES 3"] +
+        df["VTO MES 4"] + df["VTO MES 5"] + df["VTO MES 6"] +
+        df["VALOR >= 180 DIAS"]
     ).round(2)
+
+    # TOTAL POR VENCER = POR VENCER MES 1+2+3 + MAYOR 90 DIAS POR VENCER
+    df["TOTAL POR VENCER"] = (df["SALDO"] - df["MORA TOTAL"]).round(2)
     
     # Diferencia técnica por redondeo
     df["DIFERENCIA_REAL"] = (
@@ -466,32 +496,6 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     info(f"POR VENCER TOTAL: {total_vencer}")
     info(f"SUMA MORA+VENCER: {(total_mora + total_vencer).round(2)}")
     info(f"DIFERENCIA GLOBAL: {(total_saldo - (total_mora + total_vencer)).round(4)}")
-
-    # -------------------------
-    # 21. RANGOS DE VENCIMIENTO (columnas principales del reporte)
-    # -------------------------
-    # Saldo no vencido: días vencidos de 0 a 29
-    df["SALDO NO VENCIDO"] = df["SALDO"].where(df["DIAS VENCIDO"].between(0, 29), 0)
-    
-    # Vencido 30: días vencidos de 30 a 59
-    df["VENCIDO 30"] = df["SALDO"].where(df["DIAS VENCIDO"].between(30, 59), 0)
-    
-    # Vencido 60: días vencidos de 60 a 89
-    df["VENCIDO 60"] = df["SALDO"].where(df["DIAS VENCIDO"].between(60, 89), 0)
-    
-    # Vencido 90: días vencidos de 90 a 179
-    df["VENCIDO 90"] = df["SALDO"].where(df["DIAS VENCIDO"].between(90, 179), 0)
-    
-    # Vencido 180: días vencidos de 180 a 359
-    df["VENCIDO 180"] = df["SALDO"].where(df["DIAS VENCIDO"].between(180, 359), 0)
-    
-    # Vencido 360: días vencidos de 360 a 369
-    df["VENCIDO 360"] = df["SALDO"].where(df["DIAS VENCIDO"].between(360, 369), 0)
-    
-    # Vencido +360: días vencidos de +370
-    df["VENCIDO +360"] = df["SALDO"].where(df["DIAS VENCIDO"] >= 370, 0)
-    
-    info("✓ Rangos de vencimiento calculados")
 
     # -------------------------
     # VALIDACIÓN 2: Suma de rangos = Saldo
@@ -520,18 +524,21 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     # CONVERTIR FECHAS A STRING FORMATO DD/MM/YYYY PARA EXCEL
     # (Evitar problema de ##### en columnas)
     # -------------------------
-    df["FECHA"] = df["FECHA_TEMP"].dt.strftime("%d/%m/%Y")
-    df["FECHA VTO"] = df["FECHA VTO_TEMP"].dt.strftime("%d/%m/%Y")
+    df["FECHA"] = df["FECHA_TEMP"]
+    df["FECHA VTO"] = df["FECHA VTO_TEMP"]
     
-    # Rellenar NaT con cadena vacía
-    df["FECHA"] = df["FECHA"].fillna("")
-    df["FECHA VTO"] = df["FECHA VTO"].fillna("")
-    
-    # Eliminar columnas temporales
     df.drop(columns=["FECHA_TEMP", "FECHA VTO_TEMP"], inplace=True)
     
-    info("✓ Fechas formateadas como texto DD/MM/YYYY")
+    info("✓ Fechas mantenidas como datetime real")
 
+    # =========================
+    # ORDENAR CRONOLÓGICAMENTE POR FECHA
+    # =========================
+    
+    df = df.sort_values(by=["FECHA", "FECHA VTO"], ascending=[True, True])
+    
+    info("✓ Registros ordenados cronológicamente por FECHA y FECHA VTO")
+    
     # -------------------------
     # IDENTIFICAR REGISTROS CON PROBLEMAS
     # -------------------------
@@ -657,6 +664,21 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     info("✓ Tabla tipo dinámica creada por ACTIVIDAD")
     
     # -------------------------
+    # ELIMINAR COLUMNAS INTERNAS
+    # -------------------------
+    columnas_internas = [
+        "MES_FECHA",
+        "DIFERENCIA_REAL",
+        "VALIDACION_MORA_VENCER",
+        "VALIDACION_RANGOS",
+        "SUMA_RANGOS" 
+    ]
+    
+    df.drop(columns=[c for c in columnas_internas if c in df.columns], inplace=True)
+    
+    info("✓ Columnas internas eliminadas del archivo final")
+
+    # -------------------------
     # EXPORTAR EXCEL CON FORMATO USANDO XlsxWriter
     # -------------------------
     info("\n=== GENERANDO ARCHIVO EXCEL ===")
@@ -669,7 +691,7 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
         df.to_excel(writer, index=False, sheet_name="DETALLE")
         resumen.to_excel(writer, index=False, sheet_name="RESUMEN")
         validaciones.to_excel(writer, index=False, sheet_name="VALIDACIONES")
-    
+        
         if len(registros_mora_vencer_invalidos) > 0:
             registros_mora_vencer_invalidos.to_excel(writer, index=False, sheet_name="ERROR_MORA_VENCER")
     
@@ -777,6 +799,19 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
                         "MAYOR 90 DIAS POR VENCER", "TOTAL POR VENCER", "SUMA_RANGOS"]:
                 valor_cols.append(i)
         
+        
+        # Reescribir fechas como datetime real (blindaje total)
+        for row_num, row_data in enumerate(df.values):
+            for col_num, cell_data in enumerate(row_data):
+        
+                if col_num in fecha_cols and pd.notna(cell_data):
+                    worksheet_detalle.write_datetime(
+                        row_num + 1,
+                        col_num,
+                        cell_data,
+                        date_format
+                    )
+        
         # Autoajustar columnas con anchos mínimos garantizados
         for i, col in enumerate(df.columns):
             # Calcular ancho base
@@ -805,16 +840,22 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
             
             # Aplicar formato según tipo
             if i in fecha_cols:
-                worksheet_detalle.set_column(i, i, max_len, text_format)
+                worksheet_detalle.set_column(i, i, max_len, date_format)
+            
             elif i in percent_cols:
                 worksheet_detalle.set_column(i, i, max_len, percent_format)
+            
             elif i in valor_cols:
                 worksheet_detalle.set_column(i, i, max_len, number_format)
+            
             elif i in integer_cols:
-                worksheet_detalle.set_column(i, i, max_len, workbook.add_format({'align': 'center'}))
+                worksheet_detalle.set_column(i, i, max_len, workbook.add_format({
+                    'align': 'center'
+                }))
+            
             else:
                 worksheet_detalle.set_column(i, i, max_len, text_format)
-        
+                    
         # Formato para hoja resumen
         worksheet_resumen.set_column(0, 0, 35, text_format)
         worksheet_resumen.set_column(1, 1, 25, number_format)
@@ -845,7 +886,7 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
             for col_num, value in enumerate(registros_rangos_invalidos.columns.values):
                 worksheet_error_rangos.write(0, col_num, value, header_format)
             worksheet_error_rangos.set_row(0, 30)
-
+        
     info(f"\n✓ Archivo generado correctamente: {output_path}")
     info(f"✓ Total registros procesados: {len(df)}")
     info(f"✓ Saldo total: ${df['SALDO'].sum():,.2f}")

@@ -54,6 +54,7 @@ RENOMBRES = {
          "WWNMCL": "NOMBRE COMERCIAL",
          "WWNMDO": "DIRECCION",
          "WWTLF1": "TELEFONO",
+         "WWNMPO": "CIUDAD", 
          "CCCDFB": "CODIGO AGENTE",
          "BDNMNM": "NOMBRE AGENTE",
          "BDNMPA": "APELLIDO AGENTE",
@@ -186,6 +187,26 @@ def procesar_anticipos(input_path, output_path=None, fecha_cierre_str="2025-11-3
     info("✓ Columnas renombradas")
     
     # -------------------------
+    # LIMPIAR ESPACIOS EN NOMBRES
+    # -------------------------
+    columnas_nombres = [
+        "NOMBRE COMERCIAL",
+        "NOMBRE AGENTE",
+        "APELLIDO AGENTE",
+    ]
+    
+    for col in columnas_nombres:
+        if col in df.columns:
+            df[col] = (
+                df[col]
+                .astype(str)
+                .str.strip()                      # Quita espacios al inicio y final
+                .str.replace(r"\s+", " ", regex=True)  # Quita dobles espacios internos
+            )
+    
+    info("✓ Espacios eliminados correctamente en columnas de nombres")
+        
+    # -------------------------
     # 3. LIMPIAR CARACTERES NO IMPRIMIBLES
     # -------------------------
     invalid_chars = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
@@ -240,27 +261,27 @@ def procesar_anticipos(input_path, output_path=None, fecha_cierre_str="2025-11-3
     df["DENOMINACION COMERCIAL"] = df.get("NOMBRE COMERCIAL", "")
     df["DIRECCION"] = df.get("DIRECCION", "")
     df["TELEFONO"] = df.get("TELEFONO", "")
-    df["CIUDAD"] = df.get("POBLACION", "")
+    df["CIUDAD"] = df["CIUDAD"] if "CIUDAD" in df.columns else ""
     df["NUMERO FACTURA"] = df.get("NRO ANTICIPO", "")
     df["TIPO"] = df.get("TIPO ANTICIPO", "ANTICIPO")
     df["VALOR"] = df["VALOR ANTICIPO"]
     
     # Agente
     if "NOMBRE AGENTE" in df.columns and "APELLIDO AGENTE" in df.columns:
-        df["AGENTE"] = (df["NOMBRE AGENTE"].astype(str).str.strip() + " " + 
-                       df["APELLIDO AGENTE"].astype(str).str.strip()).str.strip()
+     df["AGENTE"] = (
+         df["NOMBRE AGENTE"].astype(str).str.strip() + " " +
+         df["APELLIDO AGENTE"].astype(str).str.strip()
+     ).str.replace(r"\s+", " ", regex=True).str.strip()
     else:
         df["AGENTE"] = ""
-    
+        
     # -------------------------
     # 7. PROCESAR FECHAS
     # -------------------------
     if "FECHA ANTICIPO" in df.columns:
-        df["FECHA"] = parse_fecha_segura(df["FECHA ANTICIPO"])
-        df["FECHA VTO"] = df["FECHA"]  # Misma fecha
-    else:
-        df["FECHA"] = pd.NaT
-        df["FECHA VTO"] = pd.NaT
+     df["FECHA ANTICIPO"] = parse_fecha_segura(df["FECHA ANTICIPO"])
+     df["FECHA"] = df["FECHA ANTICIPO"]
+     df["FECHA VTO"] = df["FECHA ANTICIPO"]
     
     fecha_cierre = pd.to_datetime(fecha_cierre_str)
     
@@ -396,6 +417,13 @@ def procesar_anticipos(input_path, output_path=None, fecha_cierre_str="2025-11-3
         
         # Autoajustar columnas
         for i, col in enumerate(df_salida.columns):
+        
+            # Caso especial fecha anticipo
+            if col == "FECHA ANTICIPO":
+                worksheet.set_column(i, i, 15, date_format)
+                continue
+        
+            # Calcular ancho
             if df_salida[col].dtype == 'datetime64[ns]':
                 max_len = max(len(col), 12) + 2
             else:
@@ -403,7 +431,8 @@ def procesar_anticipos(input_path, output_path=None, fecha_cierre_str="2025-11-3
                     df_salida[col].astype(str).map(len).max(),
                     len(col)
                 ) + 2
-            
+        
+            # Aplicar formato
             if i in fecha_cols:
                 worksheet.set_column(i, i, max_len, date_format)
             elif i in percent_cols:
@@ -412,7 +441,7 @@ def procesar_anticipos(input_path, output_path=None, fecha_cierre_str="2025-11-3
                 worksheet.set_column(i, i, max_len, number_format)
             else:
                 worksheet.set_column(i, i, max_len)
-        
+                
         # Formato para resumen
         worksheet_resumen.set_column(0, 0, 30)
         worksheet_resumen.set_column(1, 1, 20, number_format)
