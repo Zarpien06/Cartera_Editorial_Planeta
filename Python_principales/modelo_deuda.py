@@ -1,5 +1,5 @@
 # ==========================================================
-# MODELO DE DEUDA - Cumplimiento completo procedimiento
+# MODELO DE DEUDA
 # Departamento de Cartera - Editorial Planeta Colombia
 # ==========================================================
 
@@ -408,7 +408,7 @@ def calcular_campos_provision(df: pd.DataFrame) -> pd.DataFrame:
     
     # Calcular saldo vencido
     df['SALDO VENCIDO'] = np.where(
-        (~es_anticipo) & (df['DIAS VENCIDOS'] > 0),
+        (~es_anticipo) & (df['DIAS VENCIDOS'] > 29),  
         df['SALDO'],
         0.0
     )
@@ -439,52 +439,46 @@ def calcular_campos_provision(df: pd.DataFrame) -> pd.DataFrame:
     # -- 13. Siete buckets de vencimiento (procedimiento pág. 3) --
     df['SALDO NO VENCIDO'] = np.where(
         es_anticipo,
-        df['SALDO'],  # ← MANTENER NEGATIVO (sin .abs())
-        np.where(df['DIAS VENCIDOS'] <= 0, df['SALDO'], 0.0)
+        df['SALDO'],
+        np.where(df['DIAS VENCIDOS'] <= 29, df['SALDO'], 0.0)   # ← <= 29 captura negativos y 0–29
     )
-
-    # VENCIDO 30: Entre 1 y 29 días vencidos
+    
+    # VENCIDO 30: 30 a 59 días
     df['VENCIDO 30'] = np.where(
-        (~es_anticipo) & (df['DIAS VENCIDOS'].between(1, 29)),  # 1-29
-        df['SALDO'],
-        0.0
+        (~es_anticipo) & (df['DIAS VENCIDOS'].between(30, 59)),           # ← 30–59
+        df['SALDO'], 0.0
     )
     
-    # VENCIDO 60: Entre 30 y 59 días vencidos
+    # VENCIDO 60: 60 a 89 días
     df['VENCIDO 60'] = np.where(
-        (~es_anticipo) & (df['DIAS VENCIDOS'].between(30, 59)),  # 30-59
-        df['SALDO'],
-        0.0
+        (~es_anticipo) & (df['DIAS VENCIDOS'].between(60, 89)),           # ← 60–89
+        df['SALDO'], 0.0
     )
     
-    # VENCIDO 90: Entre 60 y 89 días vencidos
+    # VENCIDO 90: 90 a 179 días
     df['VENCIDO 90'] = np.where(
-        (~es_anticipo) & (df['DIAS VENCIDOS'].between(60, 89)),  # 60-89
-        df['SALDO'],
-        0.0
+        (~es_anticipo) & (df['DIAS VENCIDOS'].between(90, 179)),          # ← 90–179
+        df['SALDO'], 0.0
     )
     
-    # VENCIDO 180: Entre 90 y 179 días vencidos
+    # VENCIDO 180: 180 a 359 días
     df['VENCIDO 180'] = np.where(
-        (~es_anticipo) & (df['DIAS VENCIDOS'].between(90, 179)),  # 90-179
-        df['SALDO'],
-        0.0
+        (~es_anticipo) & (df['DIAS VENCIDOS'].between(180, 359)),         # ← 180–359
+        df['SALDO'], 0.0
     )
     
-    # VENCIDO 360: Entre 180 y 359 días vencidos
+    # VENCIDO 360: 360 a 369 días
     df['VENCIDO 360'] = np.where(
-        (~es_anticipo) & (df['DIAS VENCIDOS'].between(180, 359)),  # 180-359
-        df['SALDO'],
-        0.0
+        (~es_anticipo) & (df['DIAS VENCIDOS'].between(360, 369)),         # ← 360–369
+        df['SALDO'], 0.0
     )
     
-    # VENCIDO + 360: 360 o más días vencidos
+    # VENCIDO + 360: 370 días o más
     df['VENCIDO + 360'] = np.where(
-        (~es_anticipo) & (df['DIAS VENCIDOS'] >= 360),  # >= 360
-        df['SALDO'],
-        0.0
+        (~es_anticipo) & (df['DIAS VENCIDOS'] >= 370),                    # ← >= 370
+        df['SALDO'], 0.0
     )
-        
+            
     # Anticipos nunca pueden ir a vencimientos
     df.loc[es_anticipo, [
         'VENCIDO 30',
@@ -620,6 +614,13 @@ def crear_hoja_vencimientos(df_pesos_final: pd.DataFrame,
     .str.strip()
     .str.upper()
     )
+    
+    df_all['MONEDA'] = (
+        df_all['MONEDA']
+        .astype(str).str.strip().str.upper()
+        .str.replace('DÓLAR', 'DOLAR', regex=False)
+        .str.replace('DOLLAR', 'DOLAR', regex=False)
+    ) 
      
     grp_cols = ['NEGOCIO', 'CANAL', 'MONEDA', 'CLIENTE']
     for c in grp_cols:
@@ -645,6 +646,23 @@ def crear_hoja_vencimientos(df_pesos_final: pd.DataFrame,
         .groupby(grp_cols, as_index=False)[columnas_sumables]
         .sum()
     )
+    
+    # Eliminar duplicados de columnas por si acaso
+    df_sum = df_sum.loc[:, ~df_sum.columns.duplicated(keep='first')]
+    
+    # Recalcular SALDO VENCIDO desde buckets (evita desincronización)
+    df_sum['SALDO VENCIDO'] = df_sum[[
+        'VENCIDO 30', 'VENCIDO 60', 'VENCIDO 90',
+        'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360'
+    ]].sum(axis=1)
+    
+    # Normalizar MONEDA para evitar duplicados por tilde (DÓLAR vs DOLAR)
+    df_sum['MONEDA'] = (
+        df_sum['MONEDA']
+        .astype(str).str.strip().str.upper()
+        .str.replace('DÓLAR', 'DOLAR', regex=False)
+        .str.replace('DOLLAR', 'DOLAR', regex=False)
+    )
 
     df_sum.insert(0, 'Pais',       'COLOMBIA')  # ← 'PAIS' → 'Pais'
     df_sum.insert(3, 'COBRO/PAGO', 'CLIENTE')
@@ -663,7 +681,22 @@ def crear_hoja_vencimientos(df_pesos_final: pd.DataFrame,
         'DEUDA INCOBRABLE': 'DEUDA INCOBRABLE'
     })
     
-    df_sum['SALDO TOTAL'] = df_sum['Saldo No vencido'] + df_sum['Saldo Vencido']
+    df_sum['MONEDA'] = (
+        df_sum['MONEDA']
+        .astype(str).str.strip().str.upper()
+        .str.replace('DÓLAR', 'DOLAR', regex=False)
+        .str.replace('DOLLAR', 'DOLAR', regex=False)
+    )
+    
+    # Reagrupar para consolidar DÓLAR y DOLAR en una sola fila
+    cols_reagrupar = ['Pais', 'NEGOCIO', 'CANAL', 'COBRO/PAGO', 'MONEDA', 'CLIENTE']
+    cols_sumar = [
+        'SALDO TOTAL', 'Saldo No vencido', 'Saldo Vencido',
+        'Vencido 30', 'Vencido 60', 'Vencido 90',
+        'Vencido 180', 'Vencido 360', 'Vencido + 360', 'DEUDA INCOBRABLE'
+    ]
+    
+    df_sum = df_sum.groupby(cols_reagrupar, as_index=False)[cols_sumar].sum()
     
     # Totales generales por moneda (al final, según procedimiento pág. 6/8)
     totales_moneda = (
@@ -681,10 +714,6 @@ def crear_hoja_vencimientos(df_pesos_final: pd.DataFrame,
             'DEUDA INCOBRABLE'
         ]]
         .sum()
-    )
- 
-    totales_moneda['SALDO TOTAL'] = (
-        totales_moneda['Saldo No vencido'] + totales_moneda['Saldo Vencido']
     )
         
     totales_moneda['Pais'] = 'COLOMBIA'  # ← 'PAIS' → 'Pais' también
@@ -747,6 +776,23 @@ def crear_hoja_usd_euro_vencimientos(df_pesos_final: pd.DataFrame,
             .groupby(grp_cols, as_index=False)[columnas_sumables]
             .sum()
         )
+        
+        # Eliminar duplicados de columnas por si acaso
+        df_sum = df_sum.loc[:, ~df_sum.columns.duplicated(keep='first')]
+        
+        # Recalcular SALDO VENCIDO desde buckets (evita desincronización)
+        df_sum['SALDO VENCIDO'] = df_sum[[
+            'VENCIDO 30', 'VENCIDO 60', 'VENCIDO 90',
+            'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360'
+        ]].sum(axis=1)
+        
+        # Normalizar MONEDA para evitar duplicados por tilde (DÓLAR vs DOLAR)
+        df_sum['MONEDA'] = (
+            df_sum['MONEDA']
+            .astype(str).str.strip().str.upper()
+            .str.replace('DÓLAR', 'DOLAR', regex=False)
+            .str.replace('DOLLAR', 'DOLAR', regex=False)
+        )
     
         df_sum.insert(0, 'Pais',       'COLOMBIA')
         df_sum.insert(3, 'COBRO/PAGO', 'CLIENTE')
@@ -764,7 +810,22 @@ def crear_hoja_usd_euro_vencimientos(df_pesos_final: pd.DataFrame,
             'DEUDA INCOBRABLE': 'DEUDA INCOBRABLE'
         })
         
-        df_sum['SALDO TOTAL'] = df_sum['Saldo No vencido'] + df_sum['Saldo Vencido']
+        df_sum['MONEDA'] = (
+           df_sum['MONEDA']
+           .astype(str).str.strip().str.upper()
+           .str.replace('DÓLAR', 'DOLAR', regex=False)
+           .str.replace('DOLLAR', 'DOLAR', regex=False)
+        )
+        
+        # Reagrupar para consolidar DÓLAR y DOLAR en una sola fila
+        cols_reagrupar = ['Pais', 'NEGOCIO', 'CANAL', 'COBRO/PAGO', 'MONEDA', 'CLIENTE']
+        cols_sumar = [
+            'SALDO TOTAL', 'Saldo No vencido', 'Saldo Vencido',
+            'Vencido 30', 'Vencido 60', 'Vencido 90',
+            'Vencido 180', 'Vencido 360', 'Vencido + 360', 'DEUDA INCOBRABLE'
+        ]
+        
+        df_sum = df_sum.groupby(cols_reagrupar, as_index=False)[cols_sumar].sum()
         
         totales_moneda = (
             df_sum.groupby('MONEDA', as_index=False)[[
@@ -779,10 +840,6 @@ def crear_hoja_usd_euro_vencimientos(df_pesos_final: pd.DataFrame,
                 'Vencido + 360',
                 'DEUDA INCOBRABLE'
             ]].sum()
-        )
-        
-        totales_moneda['SALDO TOTAL'] = (
-            totales_moneda['Saldo No vencido'] + totales_moneda['Saldo Vencido']
         )
         
         totales_moneda['Pais'] = 'COLOMBIA'
@@ -1341,6 +1398,13 @@ def crear_modelo_deuda(archivo_provision: str,
         print("[WARN] Advertencia: Total convertido es cercano a cero. Revisar TRM.")
     
     print("  [OK] Conversión de divisas finalizada correctamente.")
+    
+    # Recalcular SALDO VENCIDO en divisas_cop después de convertir a COP
+    if 'SALDO VENCIDO' in df_divisas_cop.columns:
+        df_divisas_cop['SALDO VENCIDO'] = df_divisas_cop[[
+            'VENCIDO 30', 'VENCIDO 60', 'VENCIDO 90',
+            'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360'
+        ]].sum(axis=1)
 
     # -- PASO 6: Hoja VENCIMIENTO --
     print("\n[6/7] Generando hoja VENCIMIENTO...")
