@@ -106,7 +106,7 @@ def parse_fecha_segura(serie):
     fechas = pd.Series(pd.NaT, index=serie.index)
 
     # Detectar formato YYYYMMDD exacto (8 dígitos)
-    mask_ymd = serie.str.match(r"^\d{8}$")
+    mask_ymd = serie.str.strip().str.match(r"^\d{8}$")
 
     # Parsear YYYYMMDD explícitamente
     if mask_ymd.any():
