@@ -44,6 +44,7 @@ os.makedirs(SALIDAS_DIR, exist_ok=True)
 
 # ---------------- Parámetros del negocio ----------------
 LINEAS_PESOS = [
+    # ('CT', '80')
     ('CT', '80'), ('ED', '41'), ('ED', '44'), ('ED', '47'),
     ('PL', '10'), ('PL', '15'), ('PL', '20'), ('PL', '21'),
     ('PL', '23'), ('PL', '25'), ('PL', '28'), ('PL', '29'),
@@ -389,16 +390,20 @@ def calcular_campos_provision(df: pd.DataFrame) -> pd.DataFrame:
 
     # -- 9. Días vencidos y días por vencer --
     if 'FECHA VTO' in df.columns:
-        df['DIAS VENCIDOS']  = (fecha_corte - df['FECHA VTO']).dt.days
+        dias_raw             = (fecha_corte - df['FECHA VTO']).dt.days
+        df['DIAS VENCIDOS']  = dias_raw.clip(lower=0)   # para mostrar en Excel
+        df['__DIAS_CALC__']  = dias_raw                 # para calcular buckets (puede ser negativo)
         df['DIAS POR VENCER'] = (df['FECHA VTO'] - fecha_corte).dt.days.clip(lower=0)
     else:
         df['DIAS VENCIDOS']   = 0
+        df['__DIAS_CALC__']   = 0
         df['DIAS POR VENCER'] = 0
 
     # -- 10. SALDO VENCIDO (procedimiento pág. 3 - OBS-2 corregida) --
     # Monto vencido de cada factura (saldo de facturas con días vencidos > 0)
     # Convertir días vencidos a número
     df['DIAS VENCIDOS'] = pd.to_numeric(df['DIAS VENCIDOS'], errors='coerce').fillna(0)
+    df['__DIAS_CALC__'] = pd.to_numeric(df['__DIAS_CALC__'], errors='coerce').fillna(9999)
     
     # Detectar anticipos
     if 'TIPO' in df.columns:
@@ -408,9 +413,8 @@ def calcular_campos_provision(df: pd.DataFrame) -> pd.DataFrame:
     
     # Calcular saldo vencido
     df['SALDO VENCIDO'] = np.where(
-        (~es_anticipo) & (df['DIAS VENCIDOS'] > 29),  
-        df['SALDO'],
-        0.0
+        (~es_anticipo) & (df['__DIAS_CALC__'] > 29),
+        df['SALDO'], 0.0
     )
      
     # -- 11. % DOTACION --
@@ -437,50 +441,22 @@ def calcular_campos_provision(df: pd.DataFrame) -> pd.DataFrame:
         es_anticipo = pd.Series(False, index=df.index)
             
     # -- 13. Siete buckets de vencimiento (procedimiento pág. 3) --
+    es_nota_credito = (~es_anticipo) & (df['SALDO'] < 0)
+
     df['SALDO NO VENCIDO'] = np.where(
-        es_anticipo,
+        es_anticipo | es_nota_credito,
         df['SALDO'],
-        np.where(df['DIAS VENCIDOS'] <= 29, df['SALDO'], 0.0)   # ← <= 29 captura negativos y 0–29
+        np.where(df['__DIAS_CALC__'] <= 29, df['SALDO'], 0.0)
     )
-    
-    # VENCIDO 30: 30 a 59 días
-    df['VENCIDO 30'] = np.where(
-        (~es_anticipo) & (df['DIAS VENCIDOS'].between(30, 59)),           # ← 30–59
-        df['SALDO'], 0.0
-    )
-    
-    # VENCIDO 60: 60 a 89 días
-    df['VENCIDO 60'] = np.where(
-        (~es_anticipo) & (df['DIAS VENCIDOS'].between(60, 89)),           # ← 60–89
-        df['SALDO'], 0.0
-    )
-    
-    # VENCIDO 90: 90 a 179 días
-    df['VENCIDO 90'] = np.where(
-        (~es_anticipo) & (df['DIAS VENCIDOS'].between(90, 179)),          # ← 90–179
-        df['SALDO'], 0.0
-    )
-    
-    # VENCIDO 180: 180 a 359 días
-    df['VENCIDO 180'] = np.where(
-        (~es_anticipo) & (df['DIAS VENCIDOS'].between(180, 359)),         # ← 180–359
-        df['SALDO'], 0.0
-    )
-    
-    # VENCIDO 360: 360 a 369 días
-    df['VENCIDO 360'] = np.where(
-        (~es_anticipo) & (df['DIAS VENCIDOS'].between(360, 369)),         # ← 360–369
-        df['SALDO'], 0.0
-    )
-    
-    # VENCIDO + 360: 370 días o más
-    df['VENCIDO + 360'] = np.where(
-        (~es_anticipo) & (df['DIAS VENCIDOS'] >= 370),                    # ← >= 370
-        df['SALDO'], 0.0
-    )
+    df['VENCIDO 30']    = np.where((~es_anticipo) & (~es_nota_credito) & (df['__DIAS_CALC__'].between(30, 59)),   df['SALDO'], 0.0)
+    df['VENCIDO 60']    = np.where((~es_anticipo) & (~es_nota_credito) & (df['__DIAS_CALC__'].between(60, 89)),   df['SALDO'], 0.0)
+    df['VENCIDO 90']    = np.where((~es_anticipo) & (~es_nota_credito) & (df['__DIAS_CALC__'].between(90, 179)),  df['SALDO'], 0.0)
+    df['VENCIDO 180']   = np.where((~es_anticipo) & (~es_nota_credito) & (df['__DIAS_CALC__'].between(180, 359)), df['SALDO'], 0.0)
+    df['VENCIDO 360']   = np.where((~es_anticipo) & (~es_nota_credito) & (df['__DIAS_CALC__'].between(360, 369)), df['SALDO'], 0.0)
+    df['VENCIDO + 360'] = np.where((~es_anticipo) & (~es_nota_credito) & (df['__DIAS_CALC__'] >= 370),            df['SALDO'], 0.0)
             
     # Anticipos nunca pueden ir a vencimientos
-    df.loc[es_anticipo, [
+    df.loc[es_anticipo | es_nota_credito, [
         'VENCIDO 30',
         'VENCIDO 60',
         'VENCIDO 90',
@@ -489,39 +465,25 @@ def calcular_campos_provision(df: pd.DataFrame) -> pd.DataFrame:
         'VENCIDO + 360'
     ]] = 0
         
-    # -- 14. Validación: suma de buckets == SALDO --
-    # Validación 1: Suma de buckets == SALDO
+    # -- 14. MORA TOTAL y TOTAL POR VENCER (CALCULAR PRIMERO) --
+    df['MORA TOTAL'] = df[['VENCIDO 30', 'VENCIDO 60', 'VENCIDO 90',
+                            'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360']].sum(axis=1)
+    df['TOTAL POR VENCER'] = df['SALDO NO VENCIDO'].fillna(0.0)
+    
+    # -- 15. Validaciones --
     suma_buckets = (
         df['SALDO NO VENCIDO'] + df['VENCIDO 30'] + df['VENCIDO 60'] +
         df['VENCIDO 90'] + df['VENCIDO 180'] + df['VENCIDO 360'] + df['VENCIDO + 360']
     ).round(2)
-    
     mismatches_buckets = (
         ((suma_buckets - df['SALDO'].round(2)).abs() > 0.01) &
         (df['SALDO'] >= 0)
     ).sum()
-    
     if mismatches_buckets:
         print(f"  [WARN] {mismatches_buckets} factura(s): suma(buckets) != SALDO")
     else:
         print("  [OK] Validacion buckets: suma(buckets) = SALDO en todas las facturas")
-    
-    # Validación 2: MORA TOTAL + TOTAL POR VENCER == SALDO
-    mismatches_mora = (
-        ((df['MORA TOTAL'] + df['TOTAL POR VENCER']).round(2) - df['SALDO'].round(2)).abs() > 0.01
-    ).sum()
-    
-    if mismatches_mora:
-        print(f"  [WARN] {mismatches_mora} factura(s): MORA TOTAL + POR VENCER != SALDO")
-    else:
-        print("  [OK] Validacion mora: MORA TOTAL + TOTAL POR VENCER = SALDO en todas las facturas")
-    
-    # -- 15. MORA TOTAL y TOTAL POR VENCER --
-    df['MORA TOTAL'] = df[['VENCIDO 30', 'VENCIDO 60', 'VENCIDO 90',
-                            'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360']].sum(axis=1)
-    df['TOTAL POR VENCER'] = df['SALDO NO VENCIDO'].fillna(0.0)
 
-    # -- 16. Validación: MORA TOTAL + TOTAL POR VENCER == SALDO --
     mismatches_mora = (
         ((df['MORA TOTAL'] + df['TOTAL POR VENCER']).round(2) - df['SALDO'].round(2)).abs() > 0.01
     ).sum()
@@ -529,10 +491,8 @@ def calcular_campos_provision(df: pd.DataFrame) -> pd.DataFrame:
         print(f"  [WARN] {mismatches_mora} factura(s): MORA TOTAL + POR VENCER != SALDO")
     else:
         print("  [OK] Validacion mora: MORA TOTAL + TOTAL POR VENCER = SALDO en todas las facturas")
-
-    # -- 17 y 18: ELIMINADAS
-    # No se crean columnas POR VENCER M1, M2, M3 ni MAYOR 90 DIAS
     
+    df = df.drop(columns=['__DIAS_CALC__'], errors='ignore')
     return df
 
 # ============================================================
@@ -827,9 +787,11 @@ def crear_hoja_usd_euro_vencimientos(df_pesos_final: pd.DataFrame,
         
         df_sum = df_sum.groupby(cols_reagrupar, as_index=False)[cols_sumar].sum()
         
+        # Totales generales por moneda (al final, según procedimiento pág. 6/8)
         totales_moneda = (
-            df_sum.groupby('MONEDA', as_index=False)[[
-                'SALDO TOTAL',        
+            df_sum
+            .groupby('MONEDA', as_index=False)[[
+                'SALDO TOTAL',
                 'Saldo No vencido',
                 'Saldo Vencido',
                 'Vencido 30',
@@ -839,7 +801,8 @@ def crear_hoja_usd_euro_vencimientos(df_pesos_final: pd.DataFrame,
                 'Vencido 360',
                 'Vencido + 360',
                 'DEUDA INCOBRABLE'
-            ]].sum()
+            ]]
+            .sum()
         )
         
         totales_moneda['Pais'] = 'COLOMBIA'
@@ -952,9 +915,17 @@ def crear_modelo_deuda(archivo_provision: str,
     # Aplicar todas las transformaciones del procedimiento
     df_provision = calcular_campos_provision(df_provision)
     
-    # EXCLUSIÓN 1: PROVISIÓN
+     # EXCLUSIÓN 1: PROVISIÓN
     df_provision = excluir_pl16_pl68(df_provision, "PROVISIÓN")
-   
+
+    # FILTRO LÍNEAS VÁLIDAS (elimina PL17, PL19, PL71, PL72, PL91, etc.)
+    lineas_pesos_keys   = {f"{cod}{act}" for cod, act in LINEAS_PESOS}
+    lineas_divisas_keys = {f"{cod}{act}" for cod, act in LINEAS_DIVISAS}
+    lineas_validas      = lineas_pesos_keys | lineas_divisas_keys
+    antes = len(df_provision)
+    df_provision = df_provision[df_provision['LINEA DE NEGOCIO'].isin(lineas_validas)].copy()
+    print(f"  [OK] Filtro lineas validas: {antes - len(df_provision):,} lineas no validas eliminadas -> {len(df_provision):,} registros")
+    
     # -- PASO 4: Procesar anticipos (procedimiento pág. 4) --
     print("\n[4/7] Procesando anticipos (registros negativos, no compensación)...")
     mapeo_anticipos = {
@@ -996,7 +967,7 @@ def crear_modelo_deuda(archivo_provision: str,
         )
     # EXCLUSIÓN 2: ANTICIPOS (CRÍTICA)
     df_anticipos = excluir_pl16_pl68(df_anticipos, "ANTICIPOS")
-
+    
     # Valor anticipo * -1 (debe ser negativo, procedimiento pág. 4)
     if 'VALOR ANTICIPO' in df_anticipos.columns:
         valor_ant = pd.to_numeric(df_anticipos['VALOR ANTICIPO'], errors='coerce').fillna(0.0)
@@ -1109,10 +1080,27 @@ def crear_modelo_deuda(archivo_provision: str,
     # Unificar tipo
     df_anticipos['TIPO'] = 'ANTICIPO'
     
-    # Si no existe NUMERO FACTURA, usar NUMERO ANTICIPO
+    # Asegurar que exista NUMERO FACTURA
+    if 'NUMERO FACTURA' not in df_anticipos.columns:
+        df_anticipos['NUMERO FACTURA'] = None
+    
+    # Asignar NUMERO FACTURA desde NUMERO ANTICIPO si existe
     if 'NUMERO ANTICIPO' in df_anticipos.columns:
-        df_anticipos['NUMERO FACTURA'] = df_anticipos['NUMERO ANTICIPO']
-     
+        df_anticipos['NUMERO FACTURA'] = df_anticipos['NUMERO ANTICIPO'].astype(str).str.strip()
+    
+    # Si quedó vacío o 'nan', usar combinación única
+    mask_sin_num = (
+        df_anticipos['NUMERO FACTURA'].isna() |
+        (df_anticipos['NUMERO FACTURA'].astype(str).str.strip().isin(['', 'nan', 'NaN', 'None']))
+    )
+    
+    if mask_sin_num.any():
+        df_anticipos.loc[mask_sin_num, 'NUMERO FACTURA'] = (
+            'ANT_' +
+            df_anticipos.loc[mask_sin_num, 'LINEA DE NEGOCIO'].astype(str) + '_' +
+            df_anticipos.loc[mask_sin_num].index.astype(str)
+        )
+        
     # -------------------------------------------------------
     # SEPARAR ANTICIPOS POR MONEDA (DESPUÉS DE NORMALIZAR)
     # -------------------------------------------------------
@@ -1521,11 +1509,11 @@ def crear_modelo_deuda(archivo_provision: str,
                         for c_idx, c_name in enumerate(df_data.columns):
                             cell_val = df_data.iloc[row_idx][c_name]
                             if c_name in cols_num:
-                                ws.write(row_idx + 2, c_idx, _safe_num(cell_val), fmt_total)
+                                ws.write(row_idx + 1, c_idx, _safe_num(cell_val), fmt_total)
                             elif c_name == '% DOTACION':
-                                ws.write(row_idx + 2, c_idx, _safe_num(cell_val), fmt_total)
+                                ws.write(row_idx + 1, c_idx, _safe_num(cell_val), fmt_total)
                             else:
-                                ws.write(row_idx + 2, c_idx, str(cell_val) if cell_val else '', fmt_total_txt)
+                                ws.write(row_idx + 1, c_idx, str(cell_val) if cell_val else '', fmt_total_txt)
 
             ws.freeze_panes(1, 0)
 
@@ -1545,30 +1533,33 @@ def crear_modelo_deuda(archivo_provision: str,
         # HOJA PESOS
         # ===================================
         if not df_pesos_final.empty:
-        
+
+            df_pesos_final = df_pesos_final[
+                df_pesos_final['TIPO'].astype(str).str.upper().str.contains('ANT', na=False) |
+                ~df_pesos_final.duplicated(subset=['NUMERO FACTURA', 'LINEA DE NEGOCIO'], keep='first')
+            ]
+
             totales_pesos = (
                 df_pesos_final[[c for c in cols_num if c in df_pesos_final.columns]]
                 .sum()
                 .to_frame()
                 .T
             )
-        
+
             totales_pesos['LINEA DE NEGOCIO'] = 'TOTAL GENERAL'
             totales_pesos['DENOMINACION COMERCIAL'] = ''
             totales_pesos['MONEDA'] = 'PESOS COL'
-        
-            # Asegurar mismas columnas
+
             for col in df_pesos_final.columns:
                 if col not in totales_pesos.columns:
                     totales_pesos[col] = ''
-        
+
             totales_pesos = totales_pesos[df_pesos_final.columns]
-        
+
             df_pesos_salida = pd.concat([df_pesos_final, totales_pesos], ignore_index=True)
-        
+
             _escribir_hoja(df_pesos_salida, 'PESOS', 'TOTAL GENERAL', 'LINEA DE NEGOCIO')
             print("  [OK] Hoja PESOS escrita")
-        
         
         # ===================================
         # HOJA DIVISAS
@@ -1642,7 +1633,7 @@ def crear_modelo_deuda(archivo_provision: str,
             {'Concepto': 'Fecha de Generación', 'Valor': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'Moneda': ''},
         ])
         
-        df_tasas.to_excel(writer, sheet_name='TASAS_TRM', index=False, startrow=1)
+        df_tasas.to_excel(writer, sheet_name='TASAS_TRM', index=False, startrow=1, header=False)
         ws_tasas = writer.sheets['TASAS_TRM']
         
         # Encabezados formateados
