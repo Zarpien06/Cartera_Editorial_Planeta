@@ -102,15 +102,18 @@ try {
             break;
 
         case 'focus':
-            // Procesar FOCUS
-            $requiredFiles = ['balance', 'situacion', 'focus', 'acumulado', 'modelo'];
-            foreach ($requiredFiles as $fileKey) {
-                if (!isset($_FILES[$fileKey]) || $_FILES[$fileKey]['error'] !== UPLOAD_ERR_OK) {
-                    throw new Exception("Archivo $fileKey no proporcionado o error en la carga");
-                }
-                $uploadedFiles[] = $_FILES[$fileKey];
+        // CAMBIO: se elimina 'espana' del listado de archivos requeridos.
+        // Ahora el modelo de deuda (VENCIMIENTO, hoja TOTAL GENERAL) es la
+        // única fuente para H22/D22/F22 y el equivalente de 43042 en USD,
+        // que antes salían del archivo de España.
+        $requiredFiles = ['situacion', 'focus', 'modelo'];
+        foreach ($requiredFiles as $fileKey) {
+            if (!isset($_FILES[$fileKey]) || $_FILES[$fileKey]['error'] !== UPLOAD_ERR_OK) {
+                throw new Exception("Archivo $fileKey no proporcionado o error en la carga");
             }
-            break;
+            $uploadedFiles[] = $_FILES[$fileKey];
+        }
+        break;
     }
 
     // Verificar que el directorio de uploads exista y sea escribible

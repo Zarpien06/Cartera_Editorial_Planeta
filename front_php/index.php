@@ -17,7 +17,7 @@ require_once 'config.php';
         <div class="loader-content">
             <!-- Imagen del planeta cargando -->
             <div class="planet-loader">
-                <img src="assets/img/planetacargando.gif" alt="Cargando..." class="loader-image">
+                <img src="assets/img/planetacargando.png" alt="Cargando..." class="loader-image">
             </div>
             <div class="loader-text">
                 <h3>Cargando aplicación...</h3>
@@ -31,7 +31,7 @@ require_once 'config.php';
         <div class="loader-content">
             <!-- Imagen del planeta cargando -->
             <div class="planet-loader">
-                <img src="assets/img/planetacargando.gif" alt="Cargando..." class="loader-image">
+                <img src="assets/img/planetacargando.png" alt="Cargando..." class="loader-image">
             </div>
             
             <!-- Texto y barra de progreso -->
@@ -112,7 +112,7 @@ require_once 'config.php';
 
     <!-- Footer -->
     <footer>
-        © 2026 Grupo Planeta - Sistema de Procesamiento de Cartera
+        © 2026 Grupo Planeta Colombia - Sistema de Procesamiento de Cartera
     </footer>
 
     <!-- Modal TRM - Rediseñado -->

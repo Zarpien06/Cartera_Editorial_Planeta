@@ -226,7 +226,8 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
         info(f"ℹ️  Saldos PL30: {saldos_pl30}")
     
     # Eliminar registros donde EMPRESA='PL' Y ACTIVIDAD='30'
-    df = df[~((df["EMPRESA"] == "PL") & (df["ACTIVIDAD"] == "30"))]
+    mask_pl30 = (df["EMPRESA"] == "PL") & (df["ACTIVIDAD"] == "30")
+    df = df[~mask_pl30]
     registros_eliminados = registros_antes - len(df)
     
     if registros_eliminados > 0:
@@ -234,8 +235,12 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     else:
         warning("⚠️  No se encontraron registros PL30 para eliminar")
         warning("    Verificar que el CSV tenga registros con EMPRESA='PL' y ACTIVIDAD='30'")    
-        
- 
+    
+    # Debug adicional para confirmar PL41 y PL69
+    for act in ["41", "69"]:
+        n = len(df[(df["EMPRESA"] == "PL") & (df["ACTIVIDAD"] == act)])
+        info(f"ℹ️  Registros PL{act} en el archivo: {n}")
+     
     
     # -------------------------
     # 5. UNIFICAR NOMBRES EN DENOMINACION COMERCIAL
@@ -278,7 +283,11 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     registros_antes_filtro = len(df)
     
     # Solo eliminar facturas emitidas después del cierre
-    df = df[df["FECHA_TEMP"] <= fecha_cierre]
+    # Solo eliminar facturas emitidas después del cierre
+    # Excepción: PL41 y PL69 siempre se conservan
+    mask_excepcion = (df["EMPRESA"] == "PL") & (df["ACTIVIDAD"].isin(["41", "69"]))
+    mask_dentro_cierre = df["FECHA_TEMP"].notna() & (df["FECHA_TEMP"] <= fecha_cierre)
+    df = df[mask_dentro_cierre | mask_excepcion]
     
     registros_despues_filtro = len(df)
     registros_filtrados = registros_antes_filtro - registros_despues_filtro
@@ -731,7 +740,6 @@ def procesar_cartera(input_path, output_path=None, fecha_cierre_str=None):
     "VENCIDO 180",
     "VENCIDO 360",
     "VENCIDO +360",
-    "TOTAL POR VENCER",
     "DEUDA INCOBRABLE"
     ]
     

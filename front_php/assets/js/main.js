@@ -486,7 +486,7 @@
           </form>
         </div>`;
       actualizarCamposModeloDeudaTRM();
-    } else if (val === 'focus') {
+      } else if (val === 'focus') {
       cont.innerHTML = `
         <div class="form-container">
           <div class="process-card">
@@ -501,18 +501,7 @@
           </div>
           <form id="formFocus">
             <div style="display: grid; grid-template-columns: minmax(300px, 600px); gap: 15px; margin: 0 auto; max-width: 600px;">
-              <div class="form-row">
-                <label><i class="fas fa-balance-scale"></i> Archivo BALANCE:</label>
-                <div class="file-input-wrapper">
-                  <input type="file" name="balance" id="balance" accept=".xlsx,.xls" required>
-                  <label for="balance" class="file-input-label">
-                    <i class="fas fa-cloud-upload-alt"></i>
-                    <span>Seleccionar archivo BALANCE</span>
-                  </label>
-                </div>
-                <small class="file-info">Archivo que contiene el balance general</small>
-              </div>
-              
+    
               <div class="form-row">
                 <label><i class="fas fa-chart-pie"></i> Archivo SITUACIÓN:</label>
                 <div class="file-input-wrapper">
@@ -524,19 +513,7 @@
                 </div>
                 <small class="file-info">Archivo con la situación financiera</small>
               </div>
-              
-              <div class="form-row">
-                <label><i class="fas fa-layer-group"></i> Archivo ACUMULADO PRUEBA :</label>
-                <div class="file-input-wrapper">
-                  <input type="file" name="acumulado" id="acumulado" accept=".xlsx,.xls" required>
-                  <label for="acumulado" class="file-input-label">
-                    <i class="fas fa-cloud-upload-alt"></i>
-                    <span>Seleccionar archivo ACUMULADO PRUEBA </span>
-                  </label>
-                </div>
-                <small class="file-info">Archivo con los valores acumulados</small>
-              </div>
-              
+    
               <div class="form-row">
                 <label><i class="fas fa-crosshairs"></i> Archivo FOCUS MES ANTERIOR:</label>
                 <div class="file-input-wrapper">
@@ -548,7 +525,7 @@
                 </div>
                 <small class="file-info">Archivo FOCUS a actualizar</small>
               </div>
-              
+    
               <div class="form-row">
                 <label><i class="fas fa-file-invoice"></i> Archivo MODELO DEUDA:</label>
                 <div class="file-input-wrapper">
@@ -560,6 +537,7 @@
                 </div>
                 <small class="file-info">Archivo con los vencimientos de cartera</small>
               </div>
+
               <div id="valores_vencimientos" style="display: none; margin-top: 20px; background: #f8f9fa; padding: 15px; border-radius: 5px; border-left: 4px solid var(--primary-color);">
                 <h6 style="margin-top: 0; color: var(--primary-color);"><i class="fas fa-calculator"></i> Valores de Vencimientos</h6>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;">
@@ -717,9 +695,9 @@
             
             // Verificar que el FormData tenga el archivo
             const hasFile = formData.has('archivo') || formData.has('provision') || formData.has('anticipos') || 
-                           formData.has('balance') || formData.has('situacion') || formData.has('focus') || 
-                           formData.has('acumulado') || formData.has('modelo');
-            
+                            formData.has('balance') || formData.has('situacion') || formData.has('focus') || 
+                            formData.has('acumulado') || formData.has('modelo');
+
             if (!hasFile) {
                 throw new Error('No se detectó ningún archivo en el formulario. Por favor, seleccione un archivo.');
             }
@@ -814,32 +792,26 @@
         } else if (formId === 'formFocus') {
           const formData = new FormData();
           formData.append('tipo', 'focus');
-          const balanceFile = document.getElementById('balance')?.files[0];
           const situacionFile = document.getElementById('situacion')?.files[0];
           const focusFile = document.getElementById('focus')?.files[0];
-          const acumuladoFile = document.getElementById('acumulado')?.files[0];
           const modeloDeudaFile = document.getElementById('modelo_deuda')?.files[0];
-  
+
           const requiredFiles = [
-            { file: balanceFile, name: 'BALANCE' },
             { file: situacionFile, name: 'SITUACIÓN' },
             { file: focusFile, name: 'FOCUS' },
-            { file: acumuladoFile, name: 'ACUMULADO' },
             { file: modeloDeudaFile, name: 'MODELO DEUDA' }
           ];
-  
+
           const missingFiles = requiredFiles.filter(item => !item.file).map(item => item.name);
           if (missingFiles.length > 0) {
             showNotification(`❌ Faltan archivos obligatorios: ${missingFiles.join(', ')}`, 'error');
             return;
           }
-  
-          formData.append('balance', balanceFile);
+
           formData.append('situacion', situacionFile);
           formData.append('focus', focusFile);
-          formData.append('acumulado', acumuladoFile);
           formData.append('modelo', modeloDeudaFile);
-  
+        
           await enviarArchivo('procesar.php', formData, 'FOCUS_ACTUALIZADO.xlsx', 'Archivo FOCUS procesado', submitBtn, 'focus');
         }
       });

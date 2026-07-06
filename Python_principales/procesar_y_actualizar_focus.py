@@ -1,11 +1,14 @@
-import os
+﻿import os
 import sys
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 import json
 import shutil
 import traceback
 import re
 import time
 import logging
+import tempfile
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Tuple, Dict, Any, List, Union
 from pathlib import Path
@@ -14,6 +17,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import openpyxl
 from openpyxl import load_workbook, Workbook
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 from openpyxl.styles import PatternFill
 
@@ -172,34 +176,17 @@ def to_float(valor) -> float:
 
 
 def buscar_archivo(directorio: Path, patrones: list, extensiones=None, excluir: Optional[List[str]] = None) -> Optional[Path]:
-    """
-    Busca el archivo más reciente que coincida con alguno de los patrones
-    
-    Args:
-        directorio: Directorio donde buscar los archivos
-        patrones: Lista de patrones a buscar en los nombres de archivo
-        extensiones: Lista de extensiones permitidas (ej: ['.xlsx', '.xls']). Si es None, acepta todas.
-        
-    Returns:
-        Path al archivo más reciente que coincide con algún patrón, o None si no se encuentra
-    """
     archivos = []
-    excluir = excluir or ["backup", "old", "prev", "temp"]
+    excluir = excluir or ["backup", "old", "prev", "temp", "actualizado"]  # <-- agregar "actualizado"
     for archivo in directorio.iterdir():
         if archivo.is_file():
             nombre = archivo.name.lower()
-            # Verificar si el nombre del archivo contiene alguno de los patrones
             if any(patron.lower() in nombre for patron in patrones):
-                # Excluir nombres indeseados
                 if any(bad in nombre for bad in excluir):
                     continue
-                # Si se especifican extensiones, verificar que el archivo tenga una de ellas
                 if extensiones is None or any(nombre.endswith(ext.lower()) for ext in extensiones):
                     archivos.append(archivo)
-    
-    # Devolver el archivo más reciente si hay coincidencias
     return max(archivos, key=lambda x: x.stat().st_mtime) if archivos else None
-
 
 def leer_excel(ruta: Path, hoja=0):
     """
@@ -474,10 +461,7 @@ def actualizar_celdas_trm(ws, base_dir: Path, mes_actual: Optional[str] = None) 
             print(f"  [OK] Actualizada S42 con TRM EUR: {trm_eur}")
                 
             # Asegurar que J7 tenga el valor correcto
-            if ws['J7'].value is None or ws['J7'].data_type != 'f':
-                ws['J7'].value = trm_eur
-                aplicar_formato_numero(ws, "J7")
-                print(f"  [OK] Actualizada J7 con TRM EUR: {trm_eur}")
+            print(f"  [INFO] J7: preservando TRM cierre del modelo: {ws['J7'].value}")
                 
             print("  [OK] Actualización de celdas TRM completada")
             return True
@@ -713,170 +697,418 @@ def procesar_balance(df: pd.DataFrame) -> float:
     return total
 
 
-def procesar_situacion(df: pd.DataFrame) -> float:
+def procesar_situacion(df: pd.DataFrame) -> Tuple[float, float, float, float]:
     """
-    SITUACIÓN: Extrae TOTAL 01010 de columna SALDOS MES
-    Retorna el valor en la unidad original (no dividido)
+    Extrae de la situación de cuentas los cobros de S01 - COBROS DE CLIENTES,
+    separados en Vencida / No Vencida (lectura directa, sin proporción).
+
+    Busca la fila donde COD.CATEGORÍA 1 == 'S01 - COBROS DE CLIENTES' y la
+    SUBCUENTA/CUENTA OBJETO == '01010', y de esa fila lee dos columnas
+    independientes: el saldo vencido del mes y el saldo no vencido del mes.
+
+    Si no se encuentran columnas separadas de vencida/no vencida, cae en un
+    fallback de último recurso devolviendo (total, 0.0, total, acumulado) -
+    señal para que el código principal use el split proporcional D14/H14
+    SOLO como último recurso.
+
+    Retorna: (cobros_vencida_mes, cobros_no_vencida_mes, cobros_total_mes, cobros_acumulado)
+    Los cuatro valores se devuelven SIEMPRE con signo negativo (los cobros
+    son un movimiento que resta de la cartera, nunca una entrada positiva).
     """
     print("\n=== PROCESANDO SITUACIÓN ===")
-    
-    # Buscar columna SALDOS MES (tolerante a variaciones)
-    col_saldo = None
+
+    # ── Detectar columnas clave ─────────────────────────────────────────────
+    col_saldo_mes         = None
+    col_saldo_acum        = None
+    col_cat1              = None   # COD.CATEGORÍA 1  -> identifica S01
+    col_subcuenta         = None   # SUBCUENTA / CUENTA OBJETO -> identifica 01010
+    col_saldo_vencido     = None   # Saldo vencido del mes (split real)
+    col_saldo_no_vencido  = None   # Saldo no vencido del mes (split real)
+
     for col in df.columns:
-        col_norm = normalize_text(col)
-        if 'saldo' in col_norm and ('mes' in col_norm or 'saldos mes' in col_norm or 'saldo mes' in col_norm):
-            col_saldo = col
-            break
-    if col_saldo is None and len(df.columns) >= 9:
-        col_saldo = df.columns[8]
-    
-    # Buscar fila TOTAL 01010 en cualquier columna de texto
-    target_norm = normalize_text('TOTAL 01010')
-    for idx, row in df.iterrows():
-        hay_total = False
-        for val in row.values:
-            if isinstance(val, str) and target_norm in normalize_text(val):
-                hay_total = True
-                break
-        if hay_total:
-            if col_saldo in df.columns:
-                valor = to_float(row[col_saldo])
-            else:
-                # Fallback: tomar el último valor numérico de la fila
-                num_vals = [to_float(v) for v in row.values if pd.notna(v)]
-                valor = num_vals[-1] if num_vals else 0.0
-            print(f"TOTAL SITUACIÓN (SALDOS MES): {valor:,.2f}")
-            return valor
-    
-    print("No se encontró TOTAL 01010")
-    return 0.0
+        col_norm = normalize_text(str(col))
 
+        if (col_saldo_mes is None and 'saldo' in col_norm and 'mes' in col_norm
+                and 'acum' not in col_norm and 'vencid' not in col_norm):
+            col_saldo_mes = col
+        if (col_saldo_acum is None and 'saldo' in col_norm
+                and ('acum' in col_norm or 'acumulado' in col_norm) and 'vencid' not in col_norm):
+            col_saldo_acum = col
+        if col_cat1 is None and 'categor' in col_norm and '1' in col_norm:
+            col_cat1 = col
+        if col_subcuenta is None and ('subcuenta' in col_norm or 'cuenta objeto' in col_norm or 'objeto' in col_norm):
+            col_subcuenta = col
 
-def procesar_modelo_vencimiento(ruta: Path) -> Tuple[float, float, float, float]:
-    """
-    3. MODELO DEUDA - VENCIMIENTO: Extrae totales de vencimiento y provisión dinámicamente
-    Retorna: (total_60_plus, total_30, total_vencido, provision)
-    IMPORTANTE: Los valores retornados NO están divididos por 1000
-    """
-    print("\n=== PROCESANDO MODELO VENCIMIENTO ===")
-    
-    try:
-        # Obtener todos los nombres de hojas disponibles
-        try:
-            with pd.ExcelFile(ruta) as xls:
-                hojas_disponibles = xls.sheet_names
-                print(f"  Hojas disponibles: {', '.join(hojas_disponibles)}")
-                
-                # Buscar la hoja VENCIMIENTOS específicamente
-                hoja_vencimientos = None
-                for hoja in hojas_disponibles:
-                    if 'VENCIMIENTOS' in hoja.upper():
-                        hoja_vencimientos = hoja
-                        break
-                
-                # Si no se encuentra la hoja VENCIMIENTOS, usar la primera
-                if not hoja_vencimientos:
-                    hoja_vencimientos = hojas_disponibles[0]
-                    print(f"  [WARN] No se encontró hoja 'VENCIMIENTOS', usando: {hoja_vencimientos}")
-                else:
-                    print(f"  Hoja VENCIMIENTOS encontrada: {hoja_vencimientos}")
-                
-                df = pd.read_excel(xls, sheet_name=hoja_vencimientos)
-        except Exception as e:
-            print(f"  [ERROR] Error al leer las hojas del archivo: {str(e)}")
-            return 0.0, 0.0, 0.0, 0.0
-        
-        if df.empty:
-            print("  [WARN] Hoja vacía")
-            return 0.0, 0.0, 0.0, 0.0
-        
-        print(f"  Filas en la hoja: {len(df)}")
-        print(f"  Columnas: {list(df.columns)}")
-        
-        # Buscar filas que contienen totales (filas con '**')
-        total_60_plus = 0.0
-        total_30 = 0.0
-        provision = 0.0
-        
-        # Buscar la fila de totales por moneda (que contiene '** **')
+    # ── Detectar columnas de split Vencida / No Vencida (Cambio 3) ───────────
+    # Pasada 1: exigir que el nombre incluya "mes" para no chocar con acumuladas
+    for col in df.columns:
+        col_norm      = normalize_text(str(col))
+        es_no_vencido = 'no vencid' in col_norm
+        es_vencido    = 'vencid' in col_norm and not es_no_vencido
+        es_acum       = 'acum' in col_norm or 'acumulado' in col_norm
+
+        if es_acum:
+            continue
+        if es_vencido and 'mes' in col_norm and col_saldo_vencido is None:
+            col_saldo_vencido = col
+        if es_no_vencido and 'mes' in col_norm and col_saldo_no_vencido is None:
+            col_saldo_no_vencido = col
+
+    # Pasada 2: sin exigir "mes", si no se encontraron en la pasada 1
+    if col_saldo_vencido is None or col_saldo_no_vencido is None:
+        for col in df.columns:
+            col_norm      = normalize_text(str(col))
+            es_no_vencido = 'no vencid' in col_norm
+            es_vencido    = 'vencid' in col_norm and not es_no_vencido
+            es_acum       = 'acum' in col_norm or 'acumulado' in col_norm
+
+            if es_acum:
+                continue
+            if es_vencido and col_saldo_vencido is None:
+                col_saldo_vencido = col
+            if es_no_vencido and col_saldo_no_vencido is None:
+                col_saldo_no_vencido = col
+
+    # Fallbacks por posición (estructura del archivo Colombia Situación)
+    if col_saldo_mes is None and len(df.columns) >= 9:
+        col_saldo_mes = df.columns[8]
+    if col_saldo_acum is None and len(df.columns) >= 12:
+        col_saldo_acum = df.columns[11]
+    if col_cat1 is None and len(df.columns) >= 5:
+        col_cat1 = df.columns[4]   # COD.CATEGORÍA 1 es la col 4 (0-based) en el archivo real
+    if col_subcuenta is None and len(df.columns) >= 6:
+        col_subcuenta = df.columns[5]  # CUENTA OBJETO es col 5
+
+    print(f"  Columna SALDO MES        : {col_saldo_mes}")
+    print(f"  Columna SALDO ACUMULADO  : {col_saldo_acum}")
+    print(f"  Columna COD.CATEGORÍA 1  : {col_cat1}")
+    print(f"  Columna SUBCUENTA/OBJ    : {col_subcuenta}")
+    print(f"  Columna SALDO VENCIDO    : {col_saldo_vencido}")
+    print(f"  Columna SALDO NO VENCIDO : {col_saldo_no_vencido}")
+
+    cobros_total          = 0.0
+    cobros_acum           = 0.0
+    cobros_vencida_mes    = 0.0
+    cobros_no_vencida_mes = 0.0
+    encontrado            = False
+    fila_encontrada        = None
+
+    S01_NORM       = normalize_text('S01 - COBROS DE CLIENTES')
+    TOTAL_S01_NORM = normalize_text('Total S01 - COBROS DE CLIENTES')
+
+    # ── Estrategia 1 (FIX): buscar la fila de TOTAL real por texto exacto ────
+    if col_cat1:
         for idx, row in df.iterrows():
-            # Convertir fila a string para buscar patrones
-            fila_str = ' '.join(str(v) for v in row.values if pd.notna(v))
-            
-            # Buscar fila con totales por moneda
-            if '** **' in fila_str:
-                print(f"  Fila de totales encontrada (índice {idx}): {fila_str}")
-                
-                # Buscar columnas numéricas en esta fila
-                for col_name in df.columns:
-                    if col_name in ['SALDO', 'SALDO NO VENCIDO', 'VENCIDO 30', 'VENCIDO 60', 
-                                  'VENCIDO 90', 'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360', 
-                                  'DEUDA INCOBRABLE']:
-                        try:
-                            valor = to_float(row[col_name])
-                            if col_name == 'VENCIDO 30':
-                                total_30 = valor
-                                print(f"    VENCIDO 30: {valor:,.2f}")
-                            elif col_name in ['VENCIDO 60', 'VENCIDO 90', 'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360']:
-                                total_60_plus += valor
-                                print(f"    {col_name}: {valor:,.2f} (acumulado: {total_60_plus:,.2f})")
-                            elif col_name == 'DEUDA INCOBRABLE':
-                                provision = valor
-                                print(f"    DEUDA INCOBRABLE: {valor:,.2f}")
-                        except Exception as e:
-                            print(f"    [WARN] Error procesando columna {col_name}: {e}")
-                
-                # Una vez encontrada la fila de totales, podemos salir
+            cat1_val = normalize_text(str(row.get(col_cat1, '') or '')).strip()
+            if cat1_val == TOTAL_S01_NORM:
+                fila_encontrada = row
+                encontrado = True
+                print(f"  [S01-TOTAL] Fila encontrada en idx={idx}")
                 break
-        
-        # Si no encontramos los totales específicos, buscar la fila de totales generales
-        if total_60_plus == 0 and total_30 == 0:
-            for idx, row in df.iterrows():
-                # Convertir fila a string para buscar patrones
-                fila_str = ' '.join(str(v) for v in row.values if pd.notna(v))
-                
-                # Buscar fila con totales generales
-                if '**TOTALES**' in fila_str.upper() or 'TOTAL GENERAL' in fila_str.upper():
-                    print(f"  Fila de totales generales encontrada (índice {idx}): {fila_str}")
-                    
-                    # Buscar columnas numéricas en esta fila
-                    for col_name in df.columns:
-                        if col_name in ['SALDO', 'SALDO NO VENCIDO', 'VENCIDO 30', 'VENCIDO 60', 
-                                      'VENCIDO 90', 'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360', 
-                                      'DEUDA INCOBRABLE']:
-                            try:
-                                valor = to_float(row[col_name])
-                                if col_name == 'VENCIDO 30':
-                                    total_30 = valor
-                                    print(f"    VENCIDO 30: {valor:,.2f}")
-                                elif col_name in ['VENCIDO 60', 'VENCIDO 90', 'VENCIDO 180', 'VENCIDO 360', 'VENCIDO + 360']:
-                                    total_60_plus += valor
-                                    print(f"    {col_name}: {valor:,.2f} (acumulado: {total_60_plus:,.2f})")
-                                elif col_name == 'DEUDA INCOBRABLE':
-                                    provision = valor
-                                    print(f"    DEUDA INCOBRABLE: {valor:,.2f}")
-                            except Exception as e:
-                                print(f"    [WARN] Error procesando columna {col_name}: {e}")
-                    
-                    # Una vez encontrada la fila de totales generales, podemos salir
-                    break
-        
-        total_vencido = total_30 + total_60_plus
-        
-        print(f"  Total 30 días: {total_30:,.2f}")
-        print(f"  Total 60+ días: {total_60_plus:,.2f}")
-        print(f"  Total vencido: {total_vencido:,.2f}")
-        print(f"  DEUDA INCOBRABLE (Provisión): {provision:,.2f}")
-        
-        return total_60_plus, total_30, total_vencido, provision
-        
-    except Exception as e:
-        print(f"  [ERROR] Error procesando modelo vencimiento: {e}")
-        import traceback
-        print(f"  [DEBUG] Detalles: {traceback.format_exc()}")
+
+    # ── Estrategia 2 (fallback): "Total S01..." en cualquier celda ───────────
+    if not encontrado:
+        print("  [WARN] Estrategia 1 no encontró la fila. Intentando fallback por texto...")
+        for idx, row in df.iterrows():
+            if any(TOTAL_S01_NORM in normalize_text(str(v)) for v in row.values):
+                fila_encontrada = row
+                encontrado = True
+                print(f"  [S01-fallback] Fila encontrada en idx={idx}")
+                break
+
+    # ── Estrategia 3 (último recurso): Total 01010 genérico ──────────────────
+    if not encontrado:
+        print("  [WARN] Fallback S01 tampoco encontró. Usando Total 01010 genérico...")
+        TARGET_GENERICO = normalize_text('TOTAL 01010')
+        for idx, row in df.iterrows():
+            if any(TARGET_GENERICO in normalize_text(str(v)) for v in row.values):
+                fila_encontrada = row
+                encontrado = True
+                print(f"  [S01-generico] Fila encontrada en idx={idx}")
+                break
+
+    if not encontrado or fila_encontrada is None:
+        print("  [ERROR] No se encontró fila de cobros S01 en ninguna estrategia")
         return 0.0, 0.0, 0.0, 0.0
 
+    row = fila_encontrada
+    cobros_total = to_float(row[col_saldo_mes])  if col_saldo_mes  else 0.0
+    cobros_acum  = to_float(row[col_saldo_acum]) if col_saldo_acum else 0.0
 
+    if col_saldo_vencido is not None and col_saldo_no_vencido is not None:
+        cobros_vencida_mes    = to_float(row[col_saldo_vencido])
+        cobros_no_vencida_mes = to_float(row[col_saldo_no_vencido])
+        print(f"  [SPLIT-REAL] Vencida={cobros_vencida_mes:,.0f}  No Vencida={cobros_no_vencida_mes:,.0f}")
+
+        # Si no hay columna de total separada, derivarlo del split real
+        if cobros_total == 0.0:
+            cobros_total = cobros_vencida_mes + cobros_no_vencida_mes
+    else:
+        print("  [WARN] No se encontraron columnas separadas de Vencida/No Vencida.")
+        print("  [WARN] Se devuelve solo el total; el split proporcional D14/H14 se "
+              "usará como ÚLTIMO RECURSO en el código principal.")
+        cobros_vencida_mes    = cobros_total
+        cobros_no_vencida_mes = 0.0
+
+    # Convertir a miles si viene en pesos (valor > 1e8 es señal clara de pesos)
+    if abs(cobros_total) > 1e8:
+        print(f"  [SCALE] Cobros detectados en pesos -> dividiendo /1000")
+        cobros_total          = cobros_total          / 1000.0
+        cobros_acum           = cobros_acum           / 1000.0
+        cobros_vencida_mes    = cobros_vencida_mes    / 1000.0
+        cobros_no_vencida_mes = cobros_no_vencida_mes / 1000.0
+
+    # ── Normalización de signo (FIX) ──────────────────────────────────────────
+    # Los cobros, sin importar si vinieron del split real o son solo un total
+    # (camino que alimenta el fallback proporcional en el código principal),
+    # SIEMPRE deben quedar como un movimiento NEGATIVO: representan dinero que
+    # sale de la cartera y reduce el saldo, nunca una entrada positiva.
+    # El archivo de Situación los entrega como montos cobrados (positivos),
+    # así que aquí se invierte el signo antes de devolverlos. Esto garantiza
+    # que tanto el split real como el fallback proporcional queden bien,
+    # sin tener que tocar nada en procesar_y_actualizar_focus().
+    cobros_vencida_mes    = -abs(cobros_vencida_mes)
+    cobros_no_vencida_mes = -abs(cobros_no_vencida_mes)
+    cobros_total          = -abs(cobros_total)
+    cobros_acum           = -abs(cobros_acum)
+
+    print(f"  [SIGN-FIX] Vencida={cobros_vencida_mes:,.3f}  No Vencida={cobros_no_vencida_mes:,.3f}")
+    print(f"  COBROS VENCIDA MES (miles)    : {cobros_vencida_mes:,.3f}")
+    print(f"  COBROS NO VENCIDA MES (miles) : {cobros_no_vencida_mes:,.3f}")
+    print(f"  COBROS TOTAL MES (miles)      : {cobros_total:,.3f}")
+    print(f"  COBROS ACUMULADO (miles)      : {cobros_acum:,.3f}")
+
+    return cobros_vencida_mes, cobros_no_vencida_mes, cobros_total, cobros_acum
+
+def _encontrar_fila_total_modelo(ws) -> Optional[int]:
+    """
+    Busca la ÚLTIMA fila del Modelo Deuda que:
+    - Contenga la palabra 'Total' exacto en CUALQUIER columna (A hasta T)
+    - Tenga un valor numérico grande en columna G (> 1e6)
+    Se sobreescribe en cada match → al terminar queda la última = gran total.
+    """
+    from openpyxl.utils import column_index_from_string
+    fila_total = None
+
+    for row_idx in range(1, ws.max_row + 1):
+        col_g = to_float(ws.cell(row=row_idx, column=column_index_from_string('G')).value)
+        if col_g <= 1e6:
+            continue  # no es fila de totales grandes, skip rápido
+
+        # Revisar TODAS las celdas de la fila buscando 'total' exacto
+        for col_idx in range(1, 20):  # columnas A hasta T
+            val = str(ws.cell(row=row_idx, column=col_idx).value or '').strip().lower()
+            if val == 'total':
+                fila_total = row_idx  # se sobreescribe → siempre queda la última
+                print(f"  [TOTAL candidato] fila {row_idx} col {col_idx}: G={col_g:,.0f}")
+                break  # encontrado en esta fila, pasar a la siguiente
+
+    if fila_total:
+        print(f"  [TOTAL GENERAL] Última fila seleccionada: {fila_total}")
+    else:
+        print("  [ERROR] No se encontró fila 'Total' con valores grandes")
+
+    return fila_total
+
+
+def procesar_modelo_como_espana(ruta: Path) -> Dict[str, float]:
+    print("\n=== PROCESANDO MODELO DEUDA COMO FUENTE DE ESPAÑA ===")
+    resultado = {
+        'h22': 0.0, 'd22': 0.0, 'f22': 0.0, 'usd_total': 0.0,
+        'saldo_total_gran': 0.0, 'venc_30_gran': 0.0, 'suma_vencidos_gran': 0.0,
+        'incobrable_gran': 0.0,
+    }
+
+    try:
+        wb = load_workbook(ruta, data_only=True)
+        ws_nombre = next(
+            (h for h in wb.sheetnames if 'MODELO DEUDA' in h.strip().upper()),
+            wb.sheetnames[0]
+        )
+        ws = wb[ws_nombre]
+        print(f"  Hoja seleccionada: {ws_nombre}")
+
+        from openpyxl.utils import column_index_from_string
+        def gv(row, col_letter):
+            return to_float(ws.cell(row=row, column=column_index_from_string(col_letter)).value)
+
+        # ── Usar helper compartido para fila_total ───────────────────────────
+        fila_total = _encontrar_fila_total_modelo(ws)
+
+        # ── Recorrer filas para pesos, USD puro y TRM ───────────────────────
+        fila_pesos    = None
+        fila_usd_puro = None
+        fila_trm      = None
+
+        for row_idx in range(1, ws.max_row + 1):
+            col_e   = str(ws.cell(row=row_idx, column=5).value or '').strip()
+            col_f   = str(ws.cell(row=row_idx, column=6).value or '').strip()
+            col_g   = to_float(ws.cell(row=row_idx, column=7).value)
+
+            # Fila subtotal PESOS COL
+            if 'moneda local' in col_e.lower() and col_g > 0:
+                fila_pesos = row_idx
+                print(f"  [PESOS] Encontrado en fila {row_idx}: G={col_g:,.0f}")
+
+            # Fila subtotal USD puro
+            if 'total moneda extranjera usd' in col_f.lower():
+                fila_usd_puro = row_idx
+                print(f"  [USD PURO] Encontrado en fila {row_idx}")
+
+            # Fila TRM (conversión USD→COP)
+            trm_val = to_float(col_f)
+            if ('dólar' in col_e.lower() or 'dolar' in col_e.lower()) and trm_val > 1000:
+                fila_trm = row_idx
+                print(f"  [TRM] Encontrado en fila {row_idx}: TRM={trm_val}")
+
+        if not all([fila_pesos, fila_usd_puro, fila_total]):
+            print(f"  [ERROR] Filas clave faltantes: "
+                  f"pesos={fila_pesos}, usd={fila_usd_puro}, total={fila_total}")
+            return resultado
+
+        # ── PESOS COL: H22, D22, F22 ────────────────────────────────────────
+        G_pesos = gv(fila_pesos, 'G')
+        H_pesos = gv(fila_pesos, 'H')
+        I_pesos = gv(fila_pesos, 'I')
+        J_pesos = gv(fila_pesos, 'J')
+        K_pesos = gv(fila_pesos, 'K')
+        L_pesos = gv(fila_pesos, 'L')
+        M_pesos = gv(fila_pesos, 'M')
+        N_pesos = gv(fila_pesos, 'N')
+        vencido_pesos = I_pesos + J_pesos + K_pesos + L_pesos + M_pesos + N_pesos
+
+        h22 = G_pesos       / 1000.0
+        d22 = vencido_pesos / 1000.0
+        f22 = H_pesos       / 1000.0
+        print(f"  [PESOS] H22={h22:,.3f} | D22={d22:,.3f} | F22={f22:,.3f}")
+
+        # ── USD puro ─────────────────────────────────────────────────────────
+        usd_total = gv(fila_usd_puro, 'G')
+        print(f"  [USD] usd_total={usd_total:,.3f} USD puros")
+
+        # ── GRAN TOTAL (última fila 'Total') ─────────────────────────────────
+        saldo_total_gran   = gv(fila_total, 'G')
+        venc_30_gran       = gv(fila_total, 'I')
+        venc_60_gran       = gv(fila_total, 'J')
+        venc_90_gran       = gv(fila_total, 'K')
+        venc_180_gran      = gv(fila_total, 'L')
+        venc_360_gran      = gv(fila_total, 'M')
+        venc_360p_gran     = gv(fila_total, 'N')
+        incobrable_gran    = gv(fila_total, 'O')
+        suma_vencidos_gran = (venc_60_gran + venc_90_gran + venc_180_gran
+                              + venc_360_gran + venc_360p_gran)
+
+        print(f"  [TOTAL G] Saldo={saldo_total_gran:,.0f} | Venc30={venc_30_gran:,.0f} | "
+              f"SumaJ:N={suma_vencidos_gran:,.0f} | Incobrable={incobrable_gran:,.0f}")
+
+        wb.close()
+
+    except Exception as e:
+        print(f"  [ERROR] No se pudo leer el archivo Modelo Deuda: {e}")
+        import traceback; print(traceback.format_exc())
+        return resultado
+
+    resultado.update({
+        'h22':                h22,
+        'd22':                d22,
+        'f22':                f22,
+        'usd_total':          usd_total,
+        'saldo_total_gran':   saldo_total_gran,
+        'venc_30_gran':       venc_30_gran,
+        'suma_vencidos_gran': suma_vencidos_gran,
+        'incobrable_gran':    incobrable_gran,
+        'trm_usd_archivo':    gv(fila_trm, 'F') if fila_trm else 0.0,
+    })
+
+    return resultado
+
+
+def procesar_modelo_vencimiento(ruta: Path) -> float:
+    """Lee deuda incobrable total de col O de la ÚLTIMA fila con 'Total' y G > 1e6."""
+    print("\n=== PROCESANDO MODELO VENCIMIENTO (incobrable total) ===")
+    try:
+        wb = load_workbook(ruta, data_only=True)
+        ws_nombre = next(
+            (h for h in wb.sheetnames if 'MODELO DEUDA' in h.strip().upper()),
+            wb.sheetnames[0]
+        )
+        ws = wb[ws_nombre]
+
+        fila_total = _encontrar_fila_total_modelo(ws)
+
+        if not fila_total:
+            print("  [ERROR] No se encontró fila Total en Modelo Vencimiento")
+            wb.close()
+            return 0.0
+
+        from openpyxl.utils import column_index_from_string
+        incobrable = to_float(
+            ws.cell(row=fila_total, column=column_index_from_string('O')).value
+        )
+        print(f"  [OK] Incobrable fila {fila_total} col O = {incobrable:,.2f}")
+        wb.close()
+        return incobrable
+
+    except Exception as e:
+        print(f"  [ERROR] {e}")
+        return 0.0
+    
+def leer_celda_fija_situacion(ruta_situacion: Path) -> float:
+    """
+    Lee el TOTAL COBROS S01 buscando dinámicamente tanto la FILA
+    ('Total S01 - COBROS DE CLIENTES') como la COLUMNA ('SALDO MES'),
+    porque ambas cambian de posición según el mes (algunos archivos
+    no traen columna DIVISIÓN y/o agregan columna 'SALDO MES -1').
+    """
+    print("\n=== LEYENDO TOTAL S01 DE SITUACIÓN (columna dinámica) ===")
+    try:
+        wb_sit = load_workbook(ruta_situacion, data_only=True)
+        ws_sit = wb_sit.worksheets[0]
+
+        # 1. Encontrar la columna real de "SALDO MES" (NO "SALDO MES -1")
+        col_saldo_mes = None
+        for row in ws_sit.iter_rows(min_row=1, max_row=10):
+            for cell in row:
+                val_raw = str(cell.value or '')
+                val_norm = normalize_text(val_raw)
+                if 'saldo mes' in val_norm and '-1' not in val_raw:
+                    col_saldo_mes = cell.column
+                    break
+            if col_saldo_mes:
+                break
+
+        if not col_saldo_mes:
+            print("  [WARN] No se encontró encabezado 'SALDO MES', usando columna I (9) por defecto")
+            col_saldo_mes = 9
+        else:
+            print(f"  [OK] Columna SALDO MES detectada: {get_column_letter(col_saldo_mes)}")
+
+        # 2. Encontrar la fila "Total S01 - COBROS DE CLIENTES"
+        KEYWORDS_TOTAL = ['total s01 - cobros de clientes', 'total s01']
+
+        for row_idx in range(1, ws_sit.max_row + 1):
+            for col_idx in range(1, 15):  # rango ampliado por seguridad
+                val = normalize_text(
+                    str(ws_sit.cell(row=row_idx, column=col_idx).value or '')
+                )
+                if any(kw in val for kw in KEYWORDS_TOTAL):
+                    resultado = to_float(
+                        ws_sit.cell(row=row_idx, column=col_saldo_mes).value
+                    )
+                    col_letra = get_column_letter(col_saldo_mes)
+                    print(f"  [OK] Fila {row_idx}: '{ws_sit.cell(row=row_idx, column=col_idx).value}'"
+                          f" → {col_letra}{row_idx} = {resultado:,.3f}")
+                    wb_sit.close()
+                    return resultado
+
+        print("  [WARN] No se encontró 'Total S01' en ninguna fila")
+        wb_sit.close()
+        return 0.0
+
+    except Exception as e:
+        print(f"  [ERROR] No se pudo leer Total S01 de Situación: {e}")
+        return 0.0
+    
 def aplicar_formato_numero(ws, celda: str):
     """Aplica formato de número y alineación correcta a una celda"""
     try:
@@ -905,264 +1137,6 @@ def limpiar_celda_antes_de_pegar(ws, celda: str, descripcion: str = ""):
         print(f"  [WARN] Error limpiando celda {celda}: {str(e)}")
         return False
 
-
-def validar_datos_problematicos(ws):
-    """
-    Valida específicamente los datos problemáticos identificados en la imagen del spreadsheet.
-    Retorna un reporte de los problemas encontrados.
-    """
-    print("\n=== VALIDACIÓN DE DATOS PROBLEMÁTICOS ===")
-    
-    problemas_encontrados = []
-    
-    # Lista de celdas específicas que pueden tener problemas según la imagen
-    celdas_problematicas = [
-        # Celdas con fechas incorrectas
-        ("Q42", "Fecha TRM"),
-        ("R42", "USD TRM"), 
-        ("S42", "EUR TRM"),
-        
-        # Celdas con valores extremos
-        ("Q15", "Total Balance"),
-        ("Q16", "Saldos Mes"),
-        ("Q17", "Vencido 60+"),
-        ("Q19", "Vencido 30"),
-        ("Q22", "Balance Final"),
-        
-        # Celdas con texto incorrecto
-        ("Q3", "TRM USD"),
-        ("Q4", "1/USD"),
-        ("P3", "TRM EUR"),
-        ("P4", "1/EUR"),
-    ]
-    
-    for celda, descripcion in celdas_problematicas:
-        try:
-            cell = ws[celda]
-            valor = str(cell.value) if cell.value is not None else ""
-            
-            # Verificar problemas específicos
-            problemas_celda = []
-            
-            # 1. Fechas incorrectas
-            if "1910" in valor or "24/07/1910" in valor:
-                problemas_celda.append(f"Fecha incorrecta: {valor}")
-            
-            # 2. Texto con números
-            if any(palabra in valor.lower() for palabra in ['focus', 'prov', 'negativa', 'positivo']):
-                problemas_celda.append(f"Texto incorrecto: {valor}")
-            
-            # 3. Valores extremos
-            try:
-                if valor and valor.replace(',', '').replace('.', '').isdigit():
-                    valor_num = float(valor.replace(',', '').replace('.', ''))
-                    if valor_num > 1e12:
-                        problemas_celda.append(f"Valor extremo: {valor}")
-                    elif valor_num < 0 and abs(valor_num) > 1e6:
-                        problemas_celda.append(f"Valor negativo extremo: {valor}")
-            except (ValueError, TypeError):
-                pass
-            
-            # 4. Instrucciones de texto
-            if any(instruccion in valor for instruccion in ['BORRAR', 'cambiar', 'colocar', 'pasa a ser']):
-                problemas_celda.append(f"Instrucción de texto: {valor}")
-            
-            if problemas_celda:
-                problemas_encontrados.append({
-                    'celda': celda,
-                    'descripcion': descripcion,
-                    'valor': valor,
-                    'problemas': problemas_celda
-                })
-                
-        except Exception as e:
-            print(f"  [WARN] Error validando celda {celda}: {str(e)}")
-    
-    # Generar reporte
-    if problemas_encontrados:
-        print(f"\n[ERROR] PROBLEMAS ENCONTRADOS ({len(problemas_encontrados)} celdas):")
-        for problema in problemas_encontrados:
-            print(f"  {problema['celda']} ({problema['descripcion']}):")
-            print(f"    Valor: '{problema['valor']}'")
-            for p in problema['problemas']:
-                print(f"    - {p}")
-    else:
-        print("\n[OK] No se encontraron datos problemáticos")
-    
-    return problemas_encontrados
-
-
-def limpiar_datos_incorrectos(ws: Worksheet) -> int:
-    """
-    Limpia datos incorrectos o fuera de lugar que no deberían estar en el spreadsheet.
-    Versión optimizada para mejor rendimiento.
-    
-    Args:
-        ws: Worksheet de openpyxl a limpiar
-        
-    Returns:
-        Número de celdas limpiadas
-    """
-    print("\n=== LIMPIANDO DATOS INCORRECTOS ===")
-    
-    # Pre-compilar expresiones regulares para mejor rendimiento
-    patrones_incorrectos = [
-        # Fechas incorrectas
-        re.compile(r'24/07/1910', re.IGNORECASE),
-        re.compile(r'1910'),
-        
-        # Texto con números que no debería estar
-        re.compile(r'focus|prov|negativa|positivo', re.IGNORECASE),
-        
-        # Instrucciones de texto
-        re.compile(r'BORRAR EL RESULTADO ANTES D|cambiar el mes|colocar la tasa|pasa a ser', re.IGNORECASE),
-        
-        # Números extremadamente pequeños o incorrectos
-        re.compile(r'0,000222732'),
-    ]
-    
-    celdas_limpiadas = 0
-    errores_encontrados = 0
-    start_time = time.time()
-    
-    # Limitar el rango a celdas usadas para mejorar rendimiento
-    min_row, max_row = 1, ws.max_row if hasattr(ws, 'max_row') else 100
-    min_col, max_col = 1, ws.max_column if hasattr(ws, 'max_column') else 26
-    
-    # Asegurar límites razonables
-    max_row = min(max_row, 1000)  # No más de 1000 filas
-    max_col = min(max_col, 50)    # No más de 50 columnas (A-AX)
-    
-    print(f"  Procesando celdas {min_row}:{max_row} x {min_col}:{max_col}...")
-    
-    # Procesar solo celdas con contenido
-    for row in ws.iter_rows(min_row=min_row, max_row=max_row, 
-                          min_col=min_col, max_col=max_col, 
-                          values_only=False):
-        for cell in row:
-            try:
-                # Saltar celdas vacías
-                if cell.value is None:
-                    continue
-                    
-                valor_actual = str(cell.value)
-                valor_lower = valor_actual.lower()
-                
-                # Verificar patrones
-                for patron in patrones_incorrectos:
-                    if patron.search(valor_lower):
-                        # Solo limpiar si NO es una fórmula
-                        if cell.data_type != 'f':
-                            print(f"  [CLEAN] {cell.coordinate}: Limpiando '{valor_actual}'")
-                            cell.value = None
-                            celdas_limpiadas += 1
-                        else:
-                            print(f"  [LOCK] {cell.coordinate}: Preservando fórmula: {cell.value}")
-                            errores_encontrados += 1
-                        break
-                        
-                # Verificar valores numéricos extremos
-                if cell.data_type != 'f' and valor_actual:
-                    try:
-                        # Intentar convertir a número
-                        valor_num = float(str(valor_actual).replace(',', '').replace('.', ''))
-                        
-                        # Detectar valores extremadamente grandes (posible error de formato)
-                        if valor_num > 1e12:  # Mayor a 1 billón
-                            print(f"  [CLEAN] {cell.coordinate}: Valor extremo detectado: '{valor_actual}'")
-                            cell.value = None
-                            celdas_limpiadas += 1
-                            
-                    except (ValueError, TypeError):
-                        # No es un número, continuar
-                        pass
-                        
-                # Verificar tiempo de ejecución
-                if time.time() - start_time > 30:  # 30 segundos de tiempo máximo
-                    print("  [WARN] Tiempo de ejecución excedido. Deteniendo limpieza...")
-                    break
-                    
-            except Exception as e:
-                print(f"  [WARN] Error procesando celda {cell.coordinate}: {str(e)}")
-                errores_encontrados += 1
-                continue
-    
-    # Limpieza de celdas específicas conocidas (excluyendo Q17 y Q19 que pueden contener referencias al PDF)
-    celdas_especificas = ["Q42", "R42", "S42", "Q3", "Q4", "P3", "P4"]
-    for coord in celdas_especificas:
-        try:
-            cell = ws[coord]
-            if cell.value and cell.data_type != 'f':
-                valor = str(cell.value).lower()
-                if any(p in valor for p in ['focus', 'prov', 'negativa', 'positivo']):
-                    print(f"  [CLEAN] {coord}: Limpiando texto incorrecto")
-                    cell.value = None
-                    celdas_limpiadas += 1
-        except Exception as e:
-            print(f"  [WARN] Error limpiando {coord}: {str(e)}")
-            errores_encontrados += 1
-    
-    print(f"\n=== RESUMEN DE LIMPIEZA ===")
-    print(f"  Celdas limpiadas: {celdas_limpiadas}")
-    print(f"  Errores encontrados: {errores_encontrados}")
-    print(f"  Tiempo de ejecución: {time.time() - start_time:.2f} segundos")
-    
-    return celdas_limpiadas
-
-def verificar_y_corregir_totales(ws):
-    """Verifica y corrige las discrepancias en los totales de las columnas"""
-    print("  [CHECK] Verificando discrepancias en totales...")
-    
-    # Verificar H22 = H14+H15+H16+H17+H18
-    h14 = to_float(ws["H14"].value) if ws["H14"].value is not None else 0
-    h15 = to_float(ws["H15"].value) if ws["H15"].value is not None else 0
-    h16 = to_float(ws["H16"].value) if ws["H16"].value is not None else 0
-    h17 = to_float(ws["H17"].value) if ws["H17"].value is not None else 0
-    h18 = to_float(ws["H18"].value) if ws["H18"].value is not None else 0
-    h22_actual = to_float(ws["H22"].value) if ws["H22"].value is not None else 0
-    h22_calculado = h14 + h15 + h16 + h17 + h18
-    
-    if abs(h22_actual - h22_calculado) > 0.01:
-        print(f"  [FIX] H22 discrepancia: actual={h22_actual:,.2f}, calculado={h22_calculado:,.2f}")
-        if ws["H22"].data_type != 'f':  # Solo corregir si no es fórmula
-            ws["H22"].value = h22_calculado
-            aplicar_formato_numero(ws, "H22")
-            print(f"  [FIX] H22 corregido a: {h22_calculado:,.2f}")
-    
-    # Verificar D22 = D14+D15+D16+D17+D18
-    d14 = to_float(ws["D14"].value) if ws["D14"].value is not None else 0
-    d15 = to_float(ws["D15"].value) if ws["D15"].value is not None else 0
-    d16 = to_float(ws["D16"].value) if ws["D16"].value is not None else 0
-    d17 = to_float(ws["D17"].value) if ws["D17"].value is not None else 0
-    d18 = to_float(ws["D18"].value) if ws["D18"].value is not None else 0
-    d22_actual = to_float(ws["D22"].value) if ws["D22"].value is not None else 0
-    d22_calculado = d14 + d15 + d16 + d17 + d18
-    
-    if abs(d22_actual - d22_calculado) > 0.01:
-        print(f"  [FIX] D22 discrepancia: actual={d22_actual:,.2f}, calculado={d22_calculado:,.2f}")
-        if ws["D22"].data_type != 'f':  # Solo corregir si no es fórmula
-            ws["D22"].value = d22_calculado
-            aplicar_formato_numero(ws, "D22")
-            print(f"  [FIX] D22 corregido a: {d22_calculado:,.2f}")
-    
-    # Verificar F22 = F14+F15+F16+F17+F18
-    f14 = to_float(ws["F14"].value) if ws["F14"].value is not None else 0
-    f15 = to_float(ws["F15"].value) if ws["F15"].value is not None else 0
-    f16 = to_float(ws["F16"].value) if ws["F16"].value is not None else 0
-    f17 = to_float(ws["F17"].value) if ws["F17"].value is not None else 0
-    f18 = to_float(ws["F18"].value) if ws["F18"].value is not None else 0
-    f22_actual = to_float(ws["F22"].value) if ws["F22"].value is not None else 0
-    f22_calculado = f14 + f15 + f16 + f17 + f18
-    
-    if abs(f22_actual - f22_calculado) > 0.01:
-        print(f"  [FIX] F22 discrepancia: actual={f22_actual:,.2f}, calculado={f22_calculado:,.2f}")
-        if ws["F22"].data_type != 'f':  # Solo corregir si no es fórmula
-            ws["F22"].value = f22_calculado
-            aplicar_formato_numero(ws, "F22")
-            print(f"  [FIX] F22 corregido a: {f22_calculado:,.2f}")
-    
-    print("  [CHECK] Verificación de totales completada")
-
 def validar_datos(ws, ws_values, total_balance: float, total_vencido: float) -> None:
     """Valida totales clave contra especificaciones del PDF."""
     try:
@@ -1175,7 +1149,7 @@ def validar_datos(ws, ws_values, total_balance: float, total_vencido: float) -> 
         q15 = to_float(ws["Q15"].value)
 
     if abs(h22 - q15) > 0.01:
-        print(f"[ERROR] ERROR: H22 ({h22:,.2f}) ≠ Q15 ({q15:,.2f})")
+        print(f"[ERROR] ERROR: H22 ({h22:,.2f}) != Q15 ({q15:,.2f})")
 
     try:
         d22 = to_float(ws_values["D22"].value) if ws_values else to_float(ws["D22"].value)
@@ -1307,227 +1281,75 @@ def insertar_formula(ws, celda: str, formula: str, descripcion: str = ""):
     except Exception as e:
         print(f"  [WARN] Error insertando fórmula {descripcion} en {celda}: {str(e)}")
         return False
-
-
-def procesar_acumulado(ruta: Path, ws: Worksheet) -> Optional[str]:
+       
+def rotar_finales_a_iniciales(ws_modelo: Worksheet, ruta_archivo: Path) -> None:
     """
-    Procesa el archivo de formato acumulado y actualiza las celdas correspondientes
-    
-    Returns:
-        str: Ruta al archivo procesado si tiene éxito
-        None: Si no se pudo procesar o ocurre un error
+    Lee los valores FINALES del archivo guardado (data_only=True) y los
+    escribe como INICIALES en ws_modelo (que está abierto para edición).
+
+    NOTA: el bloque ACUM (filas 35 y 44, "Inicial ACUM") ya NO se alimenta de
+    su "Final ACUM" correspondiente (filas 43 y 50). En la plantilla actual
+    esas celdas son fórmulas que apuntan directo a su par del bloque MES
+    (fila 14 y 23 respectivamente) — "inicial a inicial", no "final a
+    inicial". Por eso se actualizan solas en cuanto la rotación de MES deja
+    D14/F14/H14 y D23/F23/H23 correctos; no hace falta (ni se debe) tocarlas
+    aquí.
     """
-    print("\n=== PROCESANDO ACUMULADO ===")
-    
-    try:
-        # Cargar archivo acumulado usando pandas para manejar ambos formatos
-        print(f"  Procesando archivo: {ruta.name}")
-        
-        # Verificar que el archivo existe
-        if not ruta.exists():
-            print(f"  [ERROR] El archivo no existe: {ruta}")
-            return None
-            
-        # Verificar tamaño del archivo (máximo 50MB)
-        file_size = ruta.stat().st_size
-        if file_size > 50 * 1024 * 1024:  # 50MB
-            print(f"  [WARN] Archivo muy grande ({file_size/1024/1024:.1f}MB), limitando procesamiento")
-        
-        # Leer el archivo con pandas
-        print("  Leyendo archivo con pandas...")
-        df = pd.read_excel(ruta, engine=None, header=None, nrows=100)  # Limitar a 100 filas
-        print(f"  Archivo leído exitosamente: {len(df)} filas, {len(df.columns)} columnas")
-        
-        # Procesar el archivo acumulado según las reglas especificadas
-        # Copiar valores de B54 a F54 al archivo FOCUS
-        
-        # Leer el archivo con openpyxl para obtener acceso a celdas específicas
-        try:
-            wb_acum = load_workbook(ruta, data_only=True)
-            ws_acum = wb_acum.active
-            
-            if ws_acum is not None:
-                # Mapeo de celdas según las reglas especificadas
-                mapping_acum = {
-                    "B54": "D36",  # Cobros
-                    "C54": "F36",
-                    "B55": "D37",  # Facturación
-                    "C55": "F37",
-                    "B56": "D38",  # Vencidos
-                    "C56": "F38",
-                    "B60": "D45",  # Dotación
-                    "B61": "D46"   # Desdotaciones
-                }
-                
-                print("\n[INFO] Copiando valores del archivo acumulado al FOCUS:")
-                for src, dst in mapping_acum.items():
-                    try:
-                        if ws_acum is not None:
-                            cell_value = ws_acum[src].value if ws_acum[src].value is not None else 0
-                            valor = to_float(cell_value)
-                            escribir_celda(ws, dst, valor)
-                            print(f"  [OK] {src} -> {dst}: {valor:,.2f}")
-                    except Exception as e:
-                        print(f"  [WARN] Error copiando {src} -> {dst}: {str(e)}")
-                        # Usar valor 0 si hay error
-                        escribir_celda(ws, dst, 0.0)
-                
-                # Limpiar celdas de verificación
-                for celda in ["D52", "F52", "H52"]:
-                    try:
-                        cell = ws[celda]
-                        if cell.data_type != 'f':  # Solo si NO es una fórmula
-                            cell.value = 0
-                            print(f"  {celda} = 0 (celda limpia)")
-                    except Exception as e:
-                        print(f"  [WARN] Error limpiando {celda}: {str(e)}")
-                
-                print("Valores del archivo acumulado copiados correctamente")
-            else:
-                print("  [ERROR] No se pudo obtener la hoja activa del archivo acumulado")
-        except Exception as e:
-            print(f"  [ERROR] Error al leer el archivo acumulado: {str(e)}")
-        
-    except FileNotFoundError as e:
-        print(f"  [ERROR] El archivo no existe o no se puede encontrar: {str(e)}")
-    except pd.errors.EmptyDataError as e:
-        print(f"  [ERROR] El archivo está vacío o no contiene datos válidos: {str(e)}")
-    except pd.errors.ParserError as e:
-        print(f"  [ERROR] Error al parsear el archivo: {str(e)}")
-    except Exception as e:
-        print(f"  [ERROR] Error inesperado al procesar el archivo acumulado: {str(e)}")
-        import traceback
-        print(f"  [DEBUG] {traceback.format_exc()}")
-    finally:
-        print("  Procesamiento de archivo acumulado finalizado")
-        
-    # Procesar el DataFrame si se pudo cargar correctamente
-    if 'df' in locals() and df is not None:
-        # Crear diccionario para acceder a valores
-        acum_data = {}
-        max_cols = min(50, len(df.columns))  # Limitar a 50 columnas
-        max_rows = min(100, len(df))  # Limitar a 100 filas
-        
-        print(f"  [INFO] Procesando {max_rows} filas x {max_cols} columnas...")
-        
-        # Crear diccionario para acceder a valores
-        acum_data = {}
-        max_cols = min(50, len(df.columns))  # Limitar a 50 columnas
-        max_rows = min(100, len(df))  # Limitar a 100 filas
-        
-        print(f"  [INFO] Procesando {max_rows} filas x {max_cols} columnas...")
-        
-        # Función auxiliar para convertir índice de columna a letra de Excel
-        def col_idx_to_letter(col_idx):
-            """Convierte un índice de columna (0-based) a letra de Excel (A, B, ..., Z, AA, AB, ...)"""
-            result = ""
-            col_idx += 1  # Convertir a 1-based
-            while col_idx > 0:
-                col_idx -= 1
-                result = chr(65 + (col_idx % 26)) + result
-                col_idx //= 26
-            return result
-        
-        # Verificar que la función de conversión funciona correctamente
-        print(f"  Verificando conversión de columnas: A={col_idx_to_letter(0)}, Z={col_idx_to_letter(25)}, AA={col_idx_to_letter(26)}, AB={col_idx_to_letter(27)}")
-        
-        # Procesar celdas con límites estrictos
-        for row_idx in range(max_rows):
-            for col_idx in range(max_cols):
-                try:
-                    # Verificar límites antes de acceder
-                    if row_idx >= len(df) or col_idx >= len(df.columns):
-                        break
-                    
-                    cell_value = df.iat[row_idx, col_idx]
-                    # Solo agregar celdas con valor
-                    if pd.notna(cell_value) and cell_value != '':
-                        # Verificar que la columna no exceda el límite de Excel (XFD = 16384)
-                        if col_idx < 16384:
-                            col_letter = col_idx_to_letter(col_idx)
-                            cell_ref = f"{col_letter}{row_idx+1}"
-                            acum_data[cell_ref] = cell_value
-                except Exception as e:
-                    print(f"  [WARN] Error procesando celda ({row_idx+1},{col_idx+1}): {str(e)}")
-                    # Continuar con la siguiente celda en lugar de fallar completamente
-                    continue
-        
-        # Esta sección ya no es necesaria ya que procesamos el archivo acumulado arriba
-        pass
-        
-        # Esta sección ya no es necesaria ya que procesamos el archivo acumulado arriba
-        mapping = {}
-        
-        # Ya procesamos el archivo acumulado arriba, así que esta sección ya no es necesaria
-        pass
-            
-        # Asegurar que los directorios necesarios existan
-        SALIDAS_DIR.mkdir(exist_ok=True, parents=True)
-        BACKUP_DIR.mkdir(exist_ok=True, parents=True)
-        
-        # Buscar archivo FOCUS en el directorio actual
-        patrones_focus = ["FOCUS_*.xls*", "FOCUS *.xls*", "FOCUS*.xls*"]
-        archivo_focus = None
-        
-        # Buscar en el directorio actual
-        for patron in patrones_focus:
+    print("\n=== ROTANDO FINALES A INICIALES ===")
+
+    wb_readonly = load_workbook(ruta_archivo, data_only=True)
+    ws_readonly = None
+    for sn in wb_readonly.sheetnames:
+        if "MODELO" in sn.strip().upper():
+            ws_readonly = wb_readonly[sn]
+            break
+    if ws_readonly is None:
+        ws_readonly = wb_readonly.active
+
+    columnas = ['D', 'F', 'H', 'J', 'L', 'N']
+
+    pares_rotacion = [
+        (22, 14),   # Deuda bruta Final MES -> Inicial MES
+        (29, 23),   # Provision acumulada Final MES -> Dotaciones Inicial MES
+        (43, 35),   # Cobros/Fact/Vencidos ACUM Final -> Inicial ACUM
+        (50, 44),   # Dotaciones ACUM Final -> Dotaciones ACUM Inicial
+    ]
+
+    for fila_origen, fila_destino in pares_rotacion:
+        for col in columnas:
+            celda_origen  = f"{col}{fila_origen}"
+            celda_destino = f"{col}{fila_destino}"
             try:
-                archivos = list(Path('.').glob(patron))
-                if archivos:
-                    archivo_focus = archivos[0]
-                    break
+                valor = ws_readonly[celda_origen].value
+                if valor is None:
+                    continue
+
+                cell_destino = ws_modelo[celda_destino]
+                if cell_destino.data_type == 'f':
+                    print(f"  [LOCK] {celda_destino}: formula preservada")
+                    continue
+
+                cell_destino.value = float(valor)
+                aplicar_formato_numero(ws_modelo, celda_destino)
+                print(f"  [ROT] {celda_origen} ({float(valor):,.2f}) -> {celda_destino}")
+
+            except (ValueError, TypeError) as e:
+                print(f"  [WARN] No se pudo rotar {celda_origen} -> {celda_destino}: {e}")
             except Exception as e:
-                print(f"  [WARN] Error buscando con patrón {patron}: {str(e)}")
-        
-        # Si no se encontró, buscar en el directorio padre
-        if not archivo_focus:
-            for patron in patrones_focus:
-                try:
-                    archivos = list(Path('..').glob(patron))
-                    if archivos:
-                        archivo_focus = archivos[0]
-                        break
-                except Exception as e:
-                    print(f"  [WARN] Error buscando en directorio padre con patrón {patron}: {str(e)}")
-        
-        if not archivo_focus:
-            print("  [ERROR] No se pudo encontrar el archivo FOCUS en el directorio actual ni en el directorio padre")
-            print("  Directorio actual:", Path('.').resolve())
-            print("  Archivos en el directorio actual:", [f.name for f in Path('.').iterdir() if f.is_file()])
-            return None
-        
-        print(f"  Archivo FOCUS encontrado: {archivo_focus.absolute()}")
-        
-        # Cargar el archivo FOCUS
-        try:
-            wb = openpyxl.load_workbook(archivo_focus)
-            active_sheet = wb.active
-            if active_sheet is None:
-                active_sheet = wb.worksheets[0] if wb.worksheets else None
-                if active_sheet is None:
-                    print("  [ERROR] No se pudo obtener ninguna hoja del archivo FOCUS")
-                    return None
-            
-            # Type assertion: active_sheet should be a Worksheet at this point
-            ws_local: Worksheet = active_sheet  # type: ignore
-            
-            # Guardar una copia de respaldo
-            backup_path = BACKUP_DIR / f"{archivo_focus.stem}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}{archivo_focus.suffix}"
-            wb.save(backup_path)
-            print(f"  Copia de respaldo guardada en: {backup_path}")
-            
-            # Guardar el archivo procesado
-            output_path = SALIDAS_DIR / f"FOCUS_ACTUALIZADO_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-            wb.save(output_path)
-            print(f"  Archivo procesado guardado en: {output_path}")
-            
-            return str(output_path)
-            
-        except Exception as e:
-            print(f"  [ERROR] Error al procesar el archivo FOCUS: {str(e)}")
-            import traceback
-            print(f"  [DEBUG] {traceback.format_exc()}")
-            return None
+                print(f"  [WARN] Error inesperado {celda_origen} -> {celda_destino}: {e}")
+
+    wb_readonly.close()
+
+    try:
+        mes_nuevo = ws_modelo['B5'].value or ""
+        titulo_actual = ws_modelo.title
+        anio = titulo_actual[-2:] if titulo_actual[-2:].isdigit() else "26"
+        ws_modelo.title = f"MODELO DEUDA {str(mes_nuevo).upper()} {anio}"
+        print(f"  [OK] Hoja renombrada a: {ws_modelo.title}")
+    except Exception as e:
+        print(f"  [WARN] No se pudo renombrar la hoja: {e}")
+
+    print("  [OK] Rotacion completada")
 
 def procesar_y_actualizar_focus(
     archivo_focus: Optional[Union[str, Path]] = None,
@@ -1536,10 +1358,10 @@ def procesar_y_actualizar_focus(
     archivo_modelo: Optional[Union[str, Path]] = None,
     archivo_acumulado: Optional[Union[str, Path]] = None,
     output_path: Optional[Union[str, Path]] = None
-) -> str:
+    ) -> str:
     """
     Función principal que procesa y actualiza el archivo FOCUS.
-    
+ 
     Args:
         archivo_focus: Ruta al archivo FOCUS base (opcional, se busca automáticamente)
         archivo_balance: Ruta al archivo de balance (opcional)
@@ -1547,21 +1369,21 @@ def procesar_y_actualizar_focus(
         archivo_modelo: Ruta al archivo de modelo deuda (opcional)
         archivo_acumulado: Ruta al archivo acumulado (opcional)
         output_path: Ruta de salida personalizada (opcional)
-    
+ 
     Returns:
         str: Ruta al archivo FOCUS actualizado generado
     """
     print("\n=== PROCESADOR FOCUS ===")
     print(f"Directorio base: {BASE_DIR}")
     print(f"Directorio de salidas: {SALIDAS_DIR}")
-    
+ 
     # Crear directorios necesarios
     SALIDAS_DIR.mkdir(exist_ok=True, parents=True)
     BACKUP_DIR.mkdir(exist_ok=True, parents=True)
-    
+ 
     # Buscar archivos si no se proporcionaron
     directorio_busqueda = Path('.')
-    
+ 
     if not archivo_focus:
         print("\nBuscando archivo FOCUS...")
         archivo_focus_path = buscar_archivo(directorio_busqueda, ['FOCUS', 'focus'], ['.xlsx', '.xls'])
@@ -1571,16 +1393,10 @@ def procesar_y_actualizar_focus(
         print(f"  Encontrado: {archivo_focus.name}")
     else:
         archivo_focus = Path(archivo_focus)
-    
-    if not archivo_balance:
-        print("\nBuscando archivo de Balance...")
-        archivo_balance_path = buscar_archivo(directorio_busqueda, ['balance', 'Balance'], ['.xlsx', '.xls'])
-        if archivo_balance_path:
-            archivo_balance = archivo_balance_path
-            print(f"  Encontrado: {archivo_balance.name}")
-    else:
-        archivo_balance = Path(archivo_balance)
-    
+ 
+    # Balance eliminado del flujo — ya no se usa
+    archivo_balance = None
+ 
     if not archivo_situacion:
         print("\nBuscando archivo de Situación...")
         archivo_situacion_path = buscar_archivo(directorio_busqueda, ['situacion', 'situación'], ['.xlsx', '.xls'])
@@ -1592,7 +1408,7 @@ def procesar_y_actualizar_focus(
     else:
         archivo_situacion = Path(archivo_situacion)
         print(f"  Archivo de Situación proporcionado: {archivo_situacion.name}")
-    
+ 
     if not archivo_modelo:
         print("\nBuscando archivo de Modelo Deuda...")
         archivo_modelo_path = buscar_archivo(directorio_busqueda, ['modelo', 'deuda', 'MODELO_DEUDA'], ['.xlsx', '.xls'])
@@ -1601,32 +1417,26 @@ def procesar_y_actualizar_focus(
             print(f"  Encontrado: {archivo_modelo.name}")
     else:
         archivo_modelo = Path(archivo_modelo)
-    
+ 
     # Cargar archivo FOCUS
     print(f"\nCargando archivo FOCUS: {archivo_focus}")
     try:
         wb = load_workbook(archivo_focus, data_only=False)
-        
-        # Buscar la hoja correcta (la primera o la que contiene los datos clave)
+ 
         ws: Optional[Worksheet] = None
-        
-        # Primero intentar encontrar la hoja "S22" específicamente
+ 
         for sheet_name in wb.sheetnames:
             if sheet_name.strip().upper() == "S22":
                 ws = wb[sheet_name]
                 print(f"  Hoja S22 encontrada: {sheet_name}")
                 break
-        
-        # Si no se encuentra la hoja S22, buscar una hoja que contenga las celdas clave (H7, Q15, Q16, etc.)
+ 
         if ws is None:
             for sheet_name in wb.sheetnames:
                 test_ws = wb[sheet_name]
-                # Verificar si tiene las celdas clave del FOCUS
-                # Solo procesar si es una Worksheet (no un Chartsheet)
                 if not isinstance(test_ws, Worksheet):
                     continue
                 try:
-                    # Verificar si las celdas existen intentando acceder a ellas
                     _ = test_ws['H7']
                     _ = test_ws['Q15']
                     _ = test_ws['Q16']
@@ -1635,8 +1445,7 @@ def procesar_y_actualizar_focus(
                     break
                 except Exception:
                     continue
-        
-        # Si no se encuentra, usar la primera hoja que sea Worksheet
+ 
         if ws is None:
             for sheet in wb.worksheets:
                 if isinstance(sheet, Worksheet):
@@ -1645,194 +1454,653 @@ def procesar_y_actualizar_focus(
             if ws is None:
                 raise ValueError("No se encontró ninguna hoja de cálculo válida en el archivo FOCUS")
             print(f"  Usando primera hoja: {ws.title}")
-        
+ 
         print(f"  Hoja activa: {ws.title}")
         print(f"  Total de hojas en el archivo: {len(wb.worksheets)}")
         print(f"  Nombres de hojas: {', '.join(wb.sheetnames)}")
     except Exception as e:
         raise Exception(f"Error al cargar archivo FOCUS: {e}")
-    
+ 
+    # ── Buscar hoja MODELO DEUDA para TRM/rotación/totales ──────────────────
+    ws_modelo: Optional[Worksheet] = None
+    for sheet_name in wb.sheetnames:
+        if "MODELO" in sheet_name.strip().upper():
+            candidate = wb[sheet_name]
+            if isinstance(candidate, Worksheet):
+                ws_modelo = candidate
+                print(f"  Hoja MODELO encontrada: {sheet_name}")
+                break
+    if ws_modelo is None:
+        ws_modelo = ws
+        print("  [WARN] No se encontró hoja MODELO, usando hoja activa para TRM")
+ 
     # Detectar mes actual del FOCUS
     mes_actual = detectar_mes_archivo(archivo_focus)
     mes_siguiente = obtener_mes_siguiente(mes_actual)
+ 
     print(f"\nMes actual detectado: {mes_actual}")
     print(f"Mes siguiente: {mes_siguiente}")
-    
-    # Actualizar mes en la celda H7
-    insertar_dato_entrada(ws, 'H7', mes_siguiente, f"Mes siguiente ({mes_siguiente})", forzar_sobrescribir=True)
-    
-    # Procesar archivos de entrada
+ 
+    insertar_dato_entrada(ws_modelo, 'B5', mes_siguiente, f"Mes siguiente ({mes_siguiente})", forzar_sobrescribir=True)
+ 
+    mes_anterior_nombre = ""
+    if mes_siguiente in MESES:
+        idx_sig = MESES.index(mes_siguiente)
+        mes_anterior_nombre = MESES[(idx_sig - 1) % 12]
+        insertar_dato_entrada(ws_modelo, 'H7', f'{mes_siguiente}(Mes)', f"Mes actual H7 = {mes_siguiente}(Mes)", forzar_sobrescribir=True)
+        insertar_dato_entrada(ws_modelo, 'H8', f'{mes_anterior_nombre}(Mes)', f"Mes anterior H8 = {mes_anterior_nombre}(Mes)", forzar_sobrescribir=True)
+ 
+    trm_info = obtener_trm_detallada(BASE_DIR)
+    if trm_info and trm_info.get('eur'):
+        j7_anterior = to_float(ws_modelo['J7'].value)
+        if j7_anterior > 0 and ws_modelo['J8'].data_type != 'f':
+            ws_modelo['J8'].value = j7_anterior
+            print(f"  [TRM] J8 actualizado con TRM anterior: {j7_anterior}")
+        insertar_dato_entrada(ws_modelo, 'J7', trm_info['eur'],
+                              "TRM EUR cierre mes actual J7", forzar_sobrescribir=True)
+        print(f"  [TRM] J7 actualizado: {trm_info['eur']}")
+ 
+        j7_nuevo = to_float(trm_info['eur'])
+        j8_val = to_float(ws_modelo['J8'].value)
+        if j7_nuevo > 0 and j8_val > 0:
+           j10_val = (j7_nuevo + j8_val) / 2.0
+           ws_modelo['J10'].value = j10_val
+           aplicar_formato_numero(ws_modelo, 'J10')
+        print(f"  [TRM] J10 (promedio) = ({j7_nuevo} + {j8_val}) / 2 = {j10_val:.3f}")
+ 
+    # ── ROTACIÓN TEMPRANA DESHABILITADA ──────────────────────────────────────
+    # La rotación D22→D14, F22→F14, H22→H14, D29→D23 se hace en el bloque
+    # de acumulados, leyendo del archivo base ANTES de cualquier modificación.
+    print("\n=== ROTACIÓN: se ejecuta en bloque de acumulados ===")
+ 
+    # Inicializar variables
     total_balance = 0.0
     total_situacion = 0.0
     total_60_plus = 0.0
     total_30 = 0.0
     total_vencido = 0.0
     provision = 0.0
-    
-    if archivo_balance and archivo_balance.exists():
-        print("\nProcesando Balance...")
-        try:
-            df_balance = leer_excel(archivo_balance)
-            total_balance = procesar_balance(df_balance)
-            print(f"  [BALANCE] Total Balance calculado: {total_balance:,.2f}")
-            insertar_dato_entrada(ws, 'Q15', total_balance / 1000.0, f"Total Balance: {total_balance:,.2f} / 1000", forzar_sobrescribir=True)
-            
-            # Actualizar valor de Balance en el área de resumen (generalmente alrededor de columna N o superior)
-            # TOTAL BALANCE / 1000 = 78.470.803,61 (según imagen)
-        except Exception as e:
-            print(f"  [ERROR] Error procesando archivo de Balance: {str(e)}")
-            import traceback
-            print(f"  [DEBUG] {traceback.format_exc()}")
-    else:
-        print("  [WARN] Archivo de Balance no encontrado o no existe")
-    
+    cobros_sit_vencida = 0.0
+    cobros_sit_no_vencida = 0.0
+    total_situacion_acum = 0.0
+ 
     if archivo_situacion and archivo_situacion.exists():
         print("\nProcesando Situación...")
         try:
             df_situacion = leer_excel(archivo_situacion)
-            total_situacion = procesar_situacion(df_situacion)
-            print(f"  [SITUACION] Total calculado: {total_situacion:,.2f}")
-            insertar_dato_entrada(ws, 'Q16', total_situacion / 1000.0, f"Total Situación: {total_situacion:,.2f} / 1000", forzar_sobrescribir=True)
-            
-            # Actualizar COBROS SITUACION (SALDO MES) / -1000
-            # Valor ejemplo: 5.015.994,49 / 5.016
-            cobros_valor = total_situacion
-            cobros_miles = cobros_valor / 1000.0
-            print(f"  [SITUACION] Cobros del mes: {cobros_valor:,.2f} / {cobros_miles:,.2f} (en miles)")
+            cobros_sit_vencida, cobros_sit_no_vencida, total_situacion, total_situacion_acum = procesar_situacion(df_situacion)
+            print(f"  [SITUACION] Cobros mes      : {total_situacion:,.2f}")
+            print(f"  [SITUACION] Cobros acumulado: {total_situacion_acum:,.2f}")
         except Exception as e:
-            print(f"  [ERROR] Error procesando archivo de Situación: {str(e)}")
-            import traceback
-            print(f"  [DEBUG] {traceback.format_exc()}")
+            print(f"  [ERROR] Error procesando Situación: {e}")
+            import traceback; print(traceback.format_exc())
     else:
-        print("  [WARN] Archivo de Situación no encontrado o no existe")
-    
+        print("  [WARN] Archivo de Situación no encontrado")
+ 
+    ### CAMBIO: lectura de la celda fija I18/I19 para Cobro No Vencida (F15) ###
+    cobro_no_vencida_celda_fija = 0.0
+    if archivo_situacion and archivo_situacion.exists():
+        try:
+            cobro_no_vencida_celda_fija = leer_celda_fija_situacion(archivo_situacion)
+        except Exception as e:
+            print(f"  [ERROR] Error leyendo celda fija I18/I19: {e}")
+ 
+    # ── Modelo Deuda externo: fuente de H22/D22/F22/usd_total/GRAN TOTAL ────
+    espana_data = {
+        'h22': 0.0, 'd22': 0.0, 'f22': 0.0, 'usd_total': 0.0,
+        'saldo_total_gran': 0.0, 'venc_30_gran': 0.0, 'suma_vencidos_gran': 0.0,
+    }
+    if archivo_modelo and archivo_modelo.exists():
+        espana_data = procesar_modelo_como_espana(archivo_modelo)
+    else:
+        print("  [WARN] Sin archivo Modelo Deuda — espana_data queda en ceros")
+ 
     if archivo_modelo and archivo_modelo.exists():
         print("\nProcesando Modelo Deuda...")
         try:
-            total_60_plus, total_30, total_vencido, provision = procesar_modelo_vencimiento(archivo_modelo)
-            print(f"  [MODELO] Total vencido 60+: {total_60_plus:,.2f}")
-            print(f"  [MODELO] Total vencido 30: {total_30:,.2f}")
-            print(f"  [MODELO] Total vencido combinado: {total_vencido:,.2f}")
-            print(f"  [MODELO] Provisión (Deuda Incobrable): {provision:,.2f}")
-            insertar_dato_entrada(ws, 'Q17', total_60_plus / 1000.0, f"Vencido 60+: {total_60_plus:,.2f} / 1000", forzar_sobrescribir=True)
-            insertar_dato_entrada(ws, 'Q19', total_30 / 1000.0, f"Vencido 30: {total_30:,.2f} / 1000", forzar_sobrescribir=True)
-            insertar_dato_entrada(ws, 'Q21', provision / 1000.0, f"Provisión: {provision:,.2f} / 1000", forzar_sobrescribir=True)
+            h22_calc         = espana_data['h22']
+            d22_calc         = espana_data['d22']
+            f22_calc         = espana_data['f22']
+            usd_total_espana = espana_data['usd_total']
+ 
+            ### CAMBIO: nuevos valores de GRAN TOTAL (G436 / J436:N436) ###
+            saldo_total_gran   = espana_data.get('saldo_total_gran', 0.0)    # G436
+            venc_30_gran       = espana_data.get('venc_30_gran', 0.0)        # J436 (solo 30 días)
+            suma_vencidos_gran = espana_data.get('suma_vencidos_gran', 0.0)  # SUMA(J436:N436)
+ 
+            trm_usd_val  = to_float(trm_info.get('usd', 0)) if trm_info else 0.0
+            valor_43042  = (usd_total_espana * trm_usd_val) / 1000.0
+            print(f"  [MODELO] H22={h22_calc:,.3f}, D22={d22_calc:,.3f}, F22={f22_calc:,.3f}")
+            print(f"  [MODELO] USD={usd_total_espana:,.3f} × TRM {trm_usd_val} = 43042: {valor_43042:,.3f} miles")
+            print(f"  [MODELO] GRAN TOTAL: Saldo(G436)={saldo_total_gran:,.3f}, "
+                  f"Venc30(J436)={venc_30_gran:,.3f}, SumaVenc(J436:N436)={suma_vencidos_gran:,.3f}")
+ 
+            # Leer iniciales del archivo base (finales del mes anterior)
+            # ANTES de escribir nada — estos son los valores correctos
+            _wb_init = load_workbook(archivo_focus, data_only=True)
+            _ws_init = None
+            for _sn in _wb_init.sheetnames:
+                if "MODELO" in _sn.strip().upper():
+                    _ws_init = _wb_init[_sn]
+                    break
+            if _ws_init is None:
+                _ws_init = _wb_init.active
+
+            d14_val = to_float(_ws_init['D22'].value) or 0.0  # Final vencida → inicial
+            f14_val = to_float(_ws_init['F22'].value) or 0.0  # Final no vencida → inicial
+            h14_val = to_float(_ws_init['H22'].value) or 0.0  # Final total → inicial
+            d23_val = to_float(_ws_init['D29'].value) or 0.0  # Final prov. acum → inicial
+            _wb_init.close()
+
+            print(f"  [MODELO] D14(=D22_ant)={d14_val:,.2f}, F14(=F22_ant)={f14_val:,.2f}, H14(=H22_ant)={h14_val:,.2f}")
+            print(f"  [MODELO] D23(=D29_ant)={d23_val:,.2f} (provisión acumulada inicial)")
+
+            # Escribir iniciales correctos en el modelo
+            if ws_modelo['D14'].data_type != 'f':
+                insertar_dato_entrada(ws_modelo, 'D14', d14_val, f"D14 inicial=D22 ant ({d14_val:,.3f})", forzar_sobrescribir=True)
+            if ws_modelo['F14'].data_type != 'f':
+                insertar_dato_entrada(ws_modelo, 'F14', f14_val, f"F14 inicial=F22 ant ({f14_val:,.3f})", forzar_sobrescribir=True)
+            if ws_modelo['H14'].data_type != 'f':
+                insertar_dato_entrada(ws_modelo, 'H14', h14_val, f"H14 inicial=H22 ant ({h14_val:,.3f})", forzar_sobrescribir=True)
+            ws_modelo['D23'].value = d23_val
+            aplicar_formato_numero(ws_modelo, 'D23')
+            ws_modelo['H23'].value = d23_val
+            aplicar_formato_numero(ws_modelo, 'H23')
+            print(f"  [FIX-D23/H23] D23 = H23 = {d23_val:,.3f}")
+             
+            ### CAMBIO 1: D15 (Cobro vencida) ###
+            # Antes: cobros_vencida_mes = cobros_sit_vencida (de Situación)
+            # Ahora: SUMA(J436:N436) del Modelo Deuda ÷ 1000, menos D14, en negativo
+            cobros_vencida_mes = -abs((suma_vencidos_gran / 1000.0) - d14_val)
+            print(f"  [D15] SUMA(J436:N436)/1000 ({suma_vencidos_gran/1000.0:,.3f}) - D14 ({d14_val:,.3f}) "
+                  f"= {cobros_vencida_mes:,.3f}")
+ 
+            ### CAMBIO 2: F15 (Cobro no vencida) ###
+            # Antes: cobros_no_vencida_mes = cobros_sit_no_vencida (detección dinámica)
+            # Ahora: celda fija I18/I19 de Situación ÷ 1000, menos D15 (ya calculado), en negativo
+            valor_i18_i19_miles = cobro_no_vencida_celda_fija / 1000.0
+            # F15 = H15 del FOCUS anterior - D15
+            _wb_h15 = load_workbook(archivo_focus, data_only=True)
+            _ws_h15 = None
+            for _sn in _wb_h15.sheetnames:
+                if "MODELO" in _sn.strip().upper():
+                    _ws_h15 = _wb_h15[_sn]
+                    break
+            if _ws_h15 is None:
+                _ws_h15 = _wb_h15.active
             
-            # Actualizar Total vencido de 60 días en adelante /1000
-            # Actualizar Total vencido de 60 días en adelante /1000
-            # Valor ejemplo: 3.001.864,25 / -1.377.290,70
+            _wb_h15.close()
+
+            # Reutilizamos el valor ya calculado dinámicamente más arriba
+            # (cobro_no_vencida_celda_fija = leer_celda_fija_situacion(archivo_situacion))
+            situacion_valor = cobro_no_vencida_celda_fija
             
-            # Calcular y actualizar F16 (Facturación del mes - No vencida)
-            # Según el FOCUS, F16 debe ser la facturación del mes no vencida dividida entre 1000
-            # La facturación del mes no vencida es el total del balance menos la deuda vencida
-            if total_balance > 0:
-                # Calcular la deuda no vencida (total balance - deuda vencida)
-                deuda_no_vencida = total_balance - total_vencido if total_vencido > 0 else total_balance
-                f16_valor = deuda_no_vencida / 1000.0
-                
-                # Mostrar información de depuración
-                print(f"  [DEBUG] Cálculo F16: Total Balance={total_balance:,.2f}, Total Vencido={total_vencido:,.2f}, Deuda No Vencida={deuda_no_vencida:,.2f}, F16={f16_valor:,.2f}")
-                
-                # Limpiar celda F16 antes de escribir el nuevo valor
-                limpiar_celda_antes_de_pegar(ws, 'F16', "Facturación del mes - No vencida")
-                
-                insertar_dato_entrada(ws, 'F16', f16_valor, f"Facturación del mes - No vencida: {f16_valor:,.2f}", forzar_sobrescribir=True)
-                
-                # También actualizar F15 (Deuda bruta NO Grupo - Final - No vencida)
-                f15_valor = deuda_no_vencida / 1000.0
-                limpiar_celda_antes_de_pegar(ws, 'F15', "Deuda bruta NO Grupo (Final - No vencida)")
-                insertar_dato_entrada(ws, 'F15', f15_valor, f"Deuda bruta NO Grupo (Final - No vencida): {f15_valor:,.2f}", forzar_sobrescribir=True)
+            # F15 = -((H20 o H21 / 1000) + D15)
+            # CORRECTO (suma con D15 que ya es negativo):
+            cobros_no_vencida_mes = -((situacion_valor / 1000) + cobros_vencida_mes)
+            print(f"  [F15] -((Situacion({situacion_valor:,.0f})/1000) + D15({cobros_vencida_mes:,.3f})) = {cobros_no_vencida_mes:,.3f}")
+            
+            total_cobros_mes = cobros_vencida_mes + cobros_no_vencida_mes
+ 
+            insertar_dato_entrada(ws_modelo, 'D15', cobros_vencida_mes,
+                                  "Cobros del mes Vencida D15", forzar_sobrescribir=True)
+            insertar_dato_entrada(ws_modelo, 'F15', cobros_no_vencida_mes,
+                                  "Cobros del mes No Vencida F15", forzar_sobrescribir=True)
+ 
+            h15_val = total_cobros_mes
+            insertar_formula(ws_modelo, 'H15', '=+D15+F15',
+                             "Cobros totales mes H15 (formula = D15+F15)")
+            print(f"  [MODELO] H15(formula)={h15_val:,.2f}  (D15={cobros_vencida_mes:,.2f}, F15={cobros_no_vencida_mes:,.2f})")
+ 
+            ### CAMBIO 3: D17 (Vencido del mes) ###
+            # Antes: d17_calc = d22_calc - d14_val - cobros_vencida_mes  (plug)
+            # Ahora: lectura directa de "vencido 30 días" del Modelo Deuda ÷ 1000, en positivo
+            d17_calc = abs(venc_30_gran / 1000.0)
+            insertar_dato_entrada(ws_modelo, 'D17', d17_calc,
+                                  f"Vencidos del mes D17 (lectura directa venc.30) = {d17_calc:,.2f}",
+                                  forzar_sobrescribir=True)
+            insertar_formula(ws_modelo, 'F17', '=-D17',
+                             "Vencidos del mes F17 (formula = -D17)")
+            f17_calc = -d17_calc
+            print(f"  [D17] Venc.30 ({venc_30_gran:,.3f}) / 1000 = {d17_calc:,.3f} (positivo)")
+            print(f"  [MODELO] D17={d17_calc:,.2f}, F17(formula)={f17_calc:,.2f}")
+ 
+           ### CAMBIO 4: F16 (Facturación del mes - No Vencida) ###
+            saldo_total_gran_miles = saldo_total_gran / 1000.0
+
+            # H22 final = H14 + H15 + H16 + H17... pero F16 depende de H22 → circular
+            # En cambio calculamos H22 final desde sus componentes conocidos:
+            # H22 = H14 (inicial total) + H15 (cobros) + H17 (vencidos)
+            # F16 es la incógnita que despejamos:
+            # saldo_total_gran/1000 = H22_final = H14 + H15 + H16 + H17
+            # → F16 = H16 = saldo_total_gran/1000 - H14 - H15 - H17
+
+            h14_total = to_float(ws_modelo['H14'].value)  # inicial total post-rotación
+            h15_total = cobros_vencida_mes + cobros_no_vencida_mes  # D15+F15
+            h17_total = d17_calc + f17_calc  # D17+F17 = d17_calc + (-d17_calc) = 0
+            # Pero H17 en el modelo es D17+F17 = d17_calc - d17_calc = 0
+            # así que simplificamos:
+            h22_final_calc = saldo_total_gran_miles  # G_total/1000 = deuda bruta final
+            f16_calc = h22_final_calc - h14_total - h15_total - (d17_calc + f17_calc)
+
+            print(f"  [F16] saldo_total/1000={saldo_total_gran_miles:,.3f}")
+            print(f"  [F16] H14={h14_total:,.3f}, H15={h15_total:,.3f}, D17+F17={d17_calc+f17_calc:,.3f}")
+            print(f"  [F16] F16 = {saldo_total_gran_miles:,.3f} - {h14_total:,.3f} "
+                  f"- {h15_total:,.3f} - {d17_calc+f17_calc:,.3f} = {f16_calc:,.3f}")
+
+            insertar_dato_entrada(ws_modelo, 'F16', f16_calc,
+                                  f"Facturación mes F16 = {f16_calc:,.3f}",
+                                  forzar_sobrescribir=True)
+            insertar_formula(ws_modelo, 'H16', '=F16',
+                             "Facturación mes H16 (fórmula = F16)")
+
+            # Limpiar D16 (facturación vencida — no aplica)
+            if ws_modelo['D16'].data_type != 'f' and ws_modelo['D16'].value not in (None, 0, 0.0, ''):
+                ws_modelo['D16'].value = None
+                print("  [MODELO] D16 limpiado")
+
+            print(f"  [MODELO] F16={f16_calc:,.3f}, H16=fórmula(=F16), D16=vacío")
+            print("  [MODELO] D22/F22/H22 se calculan vía fórmula (no se sobrescriben)")
+ 
+            ### CAMBIO 5: D24 (Dotación del mes) ###
+            ### D24 (Dotación del mes - Vencida) ###
+            d24_val = 0.0
+            try:
+                incobrable_total = procesar_modelo_vencimiento(archivo_modelo)
+                incobrable_miles = incobrable_total / 1000.0
+                d24_val = round(-incobrable_miles - d23_val, 3)
+                print(f"  [D24] -(incobrable/1000) - D23")
+                print(f"  [D24] -({incobrable_miles:,.3f}) - ({d23_val:,.3f}) = {d24_val:,.3f}")
+            except Exception as e:
+                print(f"  [WARN] No se pudo calcular D24: {e}")
+            
+            if d24_val != 0:
+                insertar_dato_entrada(ws_modelo, 'D24', d24_val,
+                                      "Dotaciones del mes D24", forzar_sobrescribir=True)
+                print(f"  [MODELO] D24 = {d24_val:,.3f}")
+            else:
+                print("  [WARN] D24 no calculado (valor = 0)")
+ 
+            # ── Acumulados ──────────────────────────────────────────────────
+            # ── Acumulados ──────────────────────────────────────────────────
+            print("\n  === LEYENDO ACUMULADOS DEL FOCUS BASE (MES ANTERIOR) ===")
+            try:
+                wb_base = load_workbook(archivo_focus, data_only=True)
+                ws_base_modelo = None
+                for sn in wb_base.sheetnames:
+                    if "MODELO" in sn.strip().upper():
+                        ws_base_modelo = wb_base[sn]
+                        break
+                if ws_base_modelo is None:
+                    ws_base_modelo = wb_base.active
+
+                def leer_base(celda):
+                    return to_float(ws_base_modelo[celda].value)
+
+                # Acumulados del mes anterior
+                d36_anterior = leer_base('D36')
+                f36_anterior = leer_base('F36')
+                d37_anterior = leer_base('D37')
+                f37_anterior = leer_base('F37')
+                d38_anterior = leer_base('D38')
+                f38_anterior = leer_base('F38')
+                d45_anterior = leer_base('D45')
+                f42_anterior = leer_base('F42')
+                d46_anterior = leer_base('D46')
+                f51_anterior = leer_base('F51')
+
+                # Valores del mes actual para dotaciones
+                f21_val = to_float(ws_modelo['F21'].value)
+
+                # Desdotaciones del mes actual: dato de entrada SOLO de este mes.
+                # Si no hay desdotación nueva este mes, debe quedar en 0.
+                d25_val = to_float(ws_modelo['D25'].value)
+                f30_val = to_float(ws_modelo['F30'].value)
+
+                wb_base.close()
+
+                print(f"  D36_ant={d36_anterior:,.3f}  F36_ant={f36_anterior:,.3f}")
+                print(f"  D37_ant={d37_anterior:,.3f}  F37_ant={f37_anterior:,.3f}")
+                print(f"  D38_ant={d38_anterior:,.3f}  F38_ant={f38_anterior:,.3f}")
+                print(f"  D45_ant={d45_anterior:,.3f}  F42_ant={f42_anterior:,.3f}")
+                print(f"  D46_ant={d46_anterior:,.3f}  F51_ant={f51_anterior:,.3f}")
+                print(f"  D25_mes={d25_val:,.3f}  F30_mes={f30_val:,.3f}")
+
+            except Exception as e:
+                print(f"  [WARN] No se pudieron leer acumulados del FOCUS base: {e}")
+                d36_anterior = f36_anterior = 0.0
+                f37_anterior = d37_anterior = 0.0
+                d38_anterior = f38_anterior = 0.0
+                d45_anterior = f42_anterior = 0.0
+                d46_anterior = f51_anterior = 0.0
+                f21_val = d25_val = f30_val = 0.0
+
+            d16_val = to_float(ws_modelo['D16'].value) or 0.0
+
+            # Cobros: D36 = D36_ant + D15 | F36 = F36_ant + F15
+            if ws_modelo['D36'].data_type != 'f':
+                insertar_dato_entrada(ws_modelo, 'D36', d36_anterior + cobros_vencida_mes,
+                                      f"Cobros acum D36 = {d36_anterior:,.3f} + {cobros_vencida_mes:,.3f}",
+                                      forzar_sobrescribir=True)
+            if ws_modelo['F36'].data_type != 'f':
+                insertar_dato_entrada(ws_modelo, 'F36', f36_anterior + cobros_no_vencida_mes,
+                                      f"Cobros acum F36 = {f36_anterior:,.3f} + {cobros_no_vencida_mes:,.3f}",
+                                      forzar_sobrescribir=True)
+
+            # Facturación: D37 = D37_ant + D16 | F37 = F37_ant + F16
+            if ws_modelo['D37'].data_type != 'f':
+                insertar_dato_entrada(ws_modelo, 'D37', d37_anterior + d16_val,
+                                      f"Facturación acum D37 = {d37_anterior:,.3f} + {d16_val:,.3f}",
+                                      forzar_sobrescribir=True)
+            if ws_modelo['F37'].data_type != 'f':
+                insertar_dato_entrada(ws_modelo, 'F37', f37_anterior + f16_calc,
+                                      f"Facturación acum F37 = {f37_anterior:,.3f} + {f16_calc:,.3f}",
+                                      forzar_sobrescribir=True)
+
+            # +/- Vencidos: D38 = D38_ant + D17 | F38 = F38_ant - D17
+            if ws_modelo['D38'].data_type != 'f':
+                insertar_dato_entrada(ws_modelo, 'D38', d38_anterior + d17_calc,
+                                      f"Vencidos acum D38 = {d38_anterior:,.3f} + {d17_calc:,.3f}",
+                                      forzar_sobrescribir=True)
+            if ws_modelo['F38'].data_type != 'f':
+                insertar_dato_entrada(ws_modelo, 'F38', f38_anterior - d17_calc,
+                                      f"Vencidos acum F38 = {f38_anterior:,.3f} - {d17_calc:,.3f}",
+                                      forzar_sobrescribir=True)
+
+            # Dotaciones: D45 = D45_ant + D24 | F42 = F42_ant + F21
+            if ws_modelo['D45'].data_type != 'f':
+                insertar_dato_entrada(ws_modelo, 'D45', d45_anterior + d24_val,
+                                      f"Dotaciones acum D45 = {d45_anterior:,.3f} + {d24_val:,.3f}",
+                                      forzar_sobrescribir=True)
+            if ws_modelo['F42'].data_type != 'f':
+                insertar_dato_entrada(ws_modelo, 'F42', f42_anterior + f21_val,
+                                      f"Dotaciones acum F42 = {f42_anterior:,.3f} + {f21_val:,.3f}",
+                                      forzar_sobrescribir=True)
+
+            # Desdotaciones: D46 = D46_ant + D25 (sin abs(), respeta el signo real)
+            d46_nuevo = d46_anterior + d25_val
+            insertar_dato_entrada(ws_modelo, 'D46', d46_nuevo,
+                                  f"Desdotaciones acum D46 = {d46_anterior:,.3f} + {d25_val:,.3f} = {d46_nuevo:,.3f}",
+                                  forzar_sobrescribir=True)
+
+            # IMPORTANTE: limpiar D25 después de sumarlo a D46.
+            # D25 es un dato de entrada solo del mes en curso; si no se
+            # reinicia a 0, el mes siguiente este mismo valor se vuelve a
+            # sumar a D46 (arrastre/doble conteo indebido).
+            # D25 NUNCA debe ser fórmula (es un dato manual), así que se
+            # limpia siempre, sin condición de por medio.
+            valor_d25_previo = ws_modelo['D25'].value
+            ws_modelo['D25'].value = 0
+            print(f"  [CLEAN] D25 reiniciado a 0 (valor anterior era: {valor_d25_previo}) "
+                  f"después de acumular {d25_val:,.3f} en D46")
+            
+            insertar_formula(ws_modelo, 'F51', '=H43+50',
+                 "Desdotaciones acum F51 (fórmula = H43+50)")
+
+            print(f"  [MODELO] Acumulados actualizados: D36/F36, D37/F37, D38/F38, D45/F42, D46/F51")
+
         except Exception as e:
             print(f"  [ERROR] Error procesando archivo de Modelo Deuda: {str(e)}")
             import traceback
             print(f"  [DEBUG] {traceback.format_exc()}")
     else:
         print("  [WARN] Archivo de Modelo Deuda no encontrado o no existe")
-    
-    # Calcular y actualizar Q22 (Deuda bruta NO Grupo - Final) basado en las reglas específicas
-    # Según el FOCUS, Q22 debe ser el total del balance dividido entre 1000
-    if total_balance > 0:
-        q22_valor = total_balance / 1000.0
-        
-        # Mostrar información de depuración
-        h22_valor = to_float(ws["H22"].value) if ws["H22"].value is not None else 0.0
-        print(f"  [DEBUG] Cálculo Q22: Total Balance={total_balance:,.2f}, Q22={q22_valor:,.2f}, H22={h22_valor:,.2f}")
-        
-        # Limpiar celda Q22 antes de escribir el nuevo valor
-        limpiar_celda_antes_de_pegar(ws, 'Q22', "Deuda bruta NO Grupo (Final)")
-        
-        insertar_dato_entrada(ws, 'Q22', q22_valor, f"Deuda bruta NO Grupo (Final): {q22_valor:,.2f}", forzar_sobrescribir=True)
-    
-    # Actualizar TRM
+
+    print("  [INFO] Q22: no se actualiza (balance eliminado)")
+ 
+    # ── Llamar actualizar_hoja_focus ─────────────────────────────────────────
+    trm_usd_val = espana_data.get('trm_usd_archivo', 0.0)
+    if trm_usd_val == 0.0:
+     trm_usd_val = to_float(trm_info.get('usd', 0)) if trm_info else 0.0
+    espana_data_final = espana_data if 'espana_data' in locals() else {
+        'h22': 0.0, 'd22': 0.0, 'f22': 0.0, 'usd_total': 0.0,
+        'saldo_total_gran': 0.0, 'venc_30_gran': 0.0, 'suma_vencidos_gran': 0.0,
+    }
+ 
+    actualizar_hoja_focus(
+        wb=wb,
+        mes_siguiente=mes_siguiente,
+        trm_usd_val=trm_usd_val,
+        espana_data=espana_data_final,
+    )
+ 
+    # ── Actualizar TRM en hoja FOCUS ─────────────────────────────────────────
     actualizar_celdas_trm(ws, BASE_DIR, mes_actual)
-    
-    # Limpiar datos incorrectos
-    limpiar_datos_incorrectos(ws)
-    # Procesar archivo acumulado si existe
-    if archivo_acumulado:
-        procesar_acumulado(Path(archivo_acumulado), ws)
-    else:
-        archivo_acum = buscar_archivo(directorio_busqueda, ['acumulado', 'Acumulado'], ['.xlsx', '.xls'])
-        if archivo_acum:
-            print(f"\nArchivo acumulado encontrado: {archivo_acum.name}")
-            procesar_acumulado(archivo_acum, ws)
-    # Verificar y corregir totales
-    verificar_y_corregir_totales(ws)
-    # Marcar el workbook como generado por este script
-    set_workbook_generation_marker(wb, ws)
-    # Guardar archivo de salida
+ 
+    # ── Validar totales ───────────────────────────────────────────────────────
+    if total_vencido > 0:
+        wb_values = load_workbook(archivo_focus, data_only=True)
+        ws_values = None
+        for sn in wb_values.sheetnames:
+            if sn.strip().upper() == "S22" or "MODELO" in sn.strip().upper():
+                ws_values = wb_values[sn]
+                break
+        validar_datos(ws_modelo, ws_values, total_vencido * 1000, total_vencido)
+        wb_values.close()
+ 
+    # ── Definir output_path y crear backup ───────────────────────────────────
     if not output_path:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         output_path = SALIDAS_DIR / f"FOCUS_ACTUALIZADO_{timestamp}.xlsx"
     else:
         output_path = Path(output_path)
-    # Crear backup del archivo original
+ 
     backup_path = BACKUP_DIR / f"{archivo_focus.stem}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}{archivo_focus.suffix}"
     shutil.copy2(archivo_focus, backup_path)
     print(f"\nBackup creado: {backup_path}")
-    # Guardar archivo procesado
+ 
+    # ── Guardar archivo final ─────────────────────────────────────────────────
     wb.save(output_path)
     print(f"\n[OK] Archivo FOCUS actualizado guardado: {output_path}")
     print(f"[OK] Tamaño: {output_path.stat().st_size / 1024:.2f} KB")
     return str(output_path)
+ 
+def actualizar_hoja_focus(
+    wb: openpyxl.Workbook,
+    mes_siguiente: str,
+    trm_usd_val: float,
+    espana_data: dict,
+) -> bool:
+    print("\n=== ACTUALIZANDO HOJA FOCUS ===")
+
+    ws_focus: Optional[Worksheet] = None
+    for sn in wb.sheetnames:
+        sn_upper = sn.strip().upper()
+        if sn_upper == "FOCUS" or sn_upper.startswith("FOCUS"):
+            ws_focus = wb[sn]
+            print(f"  Hoja FOCUS encontrada: '{sn}'")
+            break
+    if ws_focus is None:
+        # Último recurso: imprimir hojas disponibles para diagnóstico
+        print(f"  [WARN] No se encontró hoja 'FOCUS'. Hojas disponibles: {wb.sheetnames}")
+        return False
+    print(f"  Hoja FOCUS: '{ws_focus.title}'")
+
+    FILA_ENCABEZADO_MES = 6   # fila con Marzo_ac, Febrero_ac, etc.
+    FILA_DATOS_INICIO   = 8   # primera fila de datos
+    FILA_DATOS_FIN      = 15  # última fila de datos (BCA10_1)
+    COL_CODIGO          = 1   # col A
+
+    # Dos bloques fijos verificados contra el archivo real
+    BLOQUES = [
+        {"nombre": "MONEDA LOCAL", "col_inicio": 3,  "col_fin": 7},   # C-G
+        {"nombre": "Euros",        "col_inicio": 9,  "col_fin": 13},  # I-M
+    ]
+
+    for bloque in BLOQUES:
+        col_ini = bloque["col_inicio"]
+        col_fin = bloque["col_fin"]
+        nombre  = bloque["nombre"]
+        print(f"\n  Shift bloque {nombre} (cols {get_column_letter(col_ini)}-{get_column_letter(col_fin)})...")
+
+        # Shift de derecha a izquierda: col_fin <- col_fin-1 <- ... <- col_ini+1 <- col_ini
+        for col_dest in range(col_fin, col_ini, -1):
+            col_src = col_dest - 1
+
+            # Fila 6 (encabezado de mes)
+            ws_focus.cell(row=FILA_ENCABEZADO_MES, column=col_dest).value = \
+                ws_focus.cell(row=FILA_ENCABEZADO_MES, column=col_src).value
+
+            # Filas de datos
+            for row in range(FILA_DATOS_INICIO, FILA_DATOS_FIN + 1):
+                cell_src  = ws_focus.cell(row=row, column=col_src)
+                cell_dest = ws_focus.cell(row=row, column=col_dest)
+                if cell_src.data_type == 'f' and cell_src.value:
+                    cell_dest.value = _ajustar_formula_columna(
+                        str(cell_src.value), col_src, col_dest
+                    )
+                else:
+                    cell_dest.value = cell_src.value
+                if cell_src.number_format and cell_src.number_format != 'General':
+                    cell_dest.number_format = cell_src.number_format
+
+        # Escribir mes nuevo en col_ini fila 6
+        ws_focus.cell(row=FILA_ENCABEZADO_MES, column=col_ini).value = f"{mes_siguiente}_ac"
+        print(f"    {get_column_letter(col_ini)}6 = '{mes_siguiente}_ac'")
+
+        # Limpiar col_ini filas de datos (col nueva vacía inicialmente)
+        for row in range(FILA_DATOS_INICIO, FILA_DATOS_FIN + 1):
+            ws_focus.cell(row=row, column=col_ini).value = None
+
+    # Fix BCA10_1: corregir SUM(X8:X14) -> SUM(X9:X14) en cols históricas
+    fila_bca = FILA_DATOS_FIN  # fila 15
+    fixes = 0
+    for bloque in BLOQUES:
+        for col_idx in range(bloque["col_inicio"] + 1, bloque["col_fin"] + 1):  # D en adelante (no C, ya limpiada)
+            cell = ws_focus.cell(row=fila_bca, column=col_idx)
+            if cell.data_type == 'f' and cell.value:
+                nuevo, n = _fix_bca10_sum(str(cell.value), col_idx)
+                if n > 0:
+                    cell.value = nuevo
+                    fixes += 1
+    print(f"\n  Fix BCA10_1: {fixes} celdas corregidas")
+
+    # Escribir 43001 (col C = col_inicio bloque MONEDA LOCAL = 3)
+    h22_val = espana_data.get('h22', 0.0)
+    fila_43001 = _buscar_fila_por_codigo(ws_focus, '43001', FILA_DATOS_INICIO, FILA_DATOS_FIN, COL_CODIGO)
+    if fila_43001:
+        ws_focus.cell(row=fila_43001, column=3).value = h22_val
+        aplicar_formato_numero(ws_focus, f"C{fila_43001}")
+        print(f"  43001 C{fila_43001} = {h22_val:,.3f}")
+    else:
+        print("  [WARN] No se encontró fila 43001")
+
+    # Calcular y escribir 43042
+    usd_total   = espana_data.get('usd_total', 0.0)
+    valor_43042 = (usd_total * trm_usd_val) / 1000.0
+    fila_43042  = _buscar_fila_por_codigo(ws_focus, '43042', FILA_DATOS_INICIO, FILA_DATOS_FIN, COL_CODIGO)
+    if fila_43042:
+        ws_focus.cell(row=fila_43042, column=3).value = valor_43042
+        aplicar_formato_numero(ws_focus, f"C{fila_43042}")
+        print(f"  43042 C{fila_43042} = {usd_total:,.3f} USD × {trm_usd_val} / 1000 = {valor_43042:,.3f}")
+    else:
+        print("  [WARN] No se encontró fila 43042")
+
+    # Recalcular BCA10_1 col C = SUM(C9:C14) numérico
+    suma = sum(to_float(ws_focus.cell(row=r, column=3).value) for r in range(9, 15))
+    ws_focus.cell(row=fila_bca, column=3).value = suma
+    aplicar_formato_numero(ws_focus, f"C{fila_bca}")
+    print(f"  BCA10_1 C{fila_bca} = SUM(C9:C14) = {suma:,.3f}")
+
+    print("  [OK] actualizar_hoja_focus completado")
+    return True
+ 
+ 
+# ── Helpers privados ─────────────────────────────────────────────────────────
+ 
+def _buscar_fila_por_codigo(
+    ws: Worksheet,
+    codigo: str,
+    fila_inicio: int,
+    fila_fin: int,
+    col_codigo: int,
+) -> Optional[int]:
+    """Devuelve el número de fila donde col_codigo contiene 'codigo' (búsqueda parcial)."""
+    codigo_norm = codigo.strip().upper()
+    for row_idx in range(fila_inicio, fila_fin + 1):
+        val = str(ws.cell(row=row_idx, column=col_codigo).value or "").strip().upper()
+        # Coincidencia exacta primero
+        if val == codigo_norm:
+            return row_idx
+        # Coincidencia parcial (ej. "TOTAL CUENTA OBJETO 43001")
+        if codigo_norm in val:
+            return row_idx
+    return None
+ 
+ 
+def _ajustar_formula_columna(formula: str, col_src: int, col_dest: int) -> str:
+    """
+    Desplaza las referencias de columna dentro de una fórmula de col_src a col_dest.
+    Solo ajusta referencias absolutas de columna (letras) que coincidan con col_src.
+    Preserva referencias con $ y referencias a otras columnas intactas.
+ 
+    Ej: col_src=3 (C), col_dest=4 (D):
+        =SUM(C9:C14)  ->  =SUM(D9:D14)
+        =C8           ->  =D8
+        =$A8          ->  =$A8   (col absoluta A no cambia)
+    """
+    import re as _re
+    letra_src  = openpyxl.utils.get_column_letter(col_src)
+    letra_dest = openpyxl.utils.get_column_letter(col_dest)
+ 
+    # Reemplazar referencias a la columna origen (sin $ delante de la letra)
+    # Patrón: no precedido por $ ni letra, seguido de dígito o :
+    patron = _re.compile(
+        rf'(?<![A-Z$]){_re.escape(letra_src)}(?=\d|:)',
+        _re.IGNORECASE
+    )
+    return patron.sub(letra_dest, formula)
+ 
+ 
+def _fix_bca10_sum(formula: str, col_idx: int) -> tuple:
+    """
+    Si la fórmula es =SUM(Xn:X14) con n < 9, la corrige a =SUM(X9:X14).
+    Retorna (formula_corregida, numero_reemplazos).
+    """
+    import re as _re
+    col_ltr = openpyxl.utils.get_column_letter(col_idx)
+ 
+    # Patrón: =SUM(<COL><FILA_INICIO>:<COL>14)  con fila_inicio < 9
+    patron = _re.compile(
+        rf'=SUM\({_re.escape(col_ltr)}([1-8]):{_re.escape(col_ltr)}14\)',
+        _re.IGNORECASE
+    )
+    nueva_formula, n = patron.subn(
+        lambda m: f'=SUM({col_ltr}9:{col_ltr}14)',
+        formula
+    )
+    return nueva_formula, n
 
 if __name__ == "__main__":
     try:
         cli_args = sys.argv[1:]
-        balance_arg = cli_args[0] if len(cli_args) > 0 else None
-        situacion_arg = cli_args[1] if len(cli_args) > 1 else None
-        focus_arg = cli_args[2] if len(cli_args) > 2 else None
-        acumulado_arg = cli_args[3] if len(cli_args) > 3 else None
-        modelo_arg = cli_args[4] if len(cli_args) > 4 else None
+        situacion_arg = cli_args[0] if len(cli_args) > 0 else None
+        focus_arg     = cli_args[1] if len(cli_args) > 1 else None
+        modelo_arg    = cli_args[2] if len(cli_args) > 2 else None
 
         if cli_args:
-            print("[CLI] Ejecutando con argumentos proporcionados por PHP/frontend:")
-            print(f"  balance: {balance_arg}")
+            print("[CLI] Ejecutando con argumentos:")
             print(f"  situacion: {situacion_arg}")
-            print(f"  focus: {focus_arg}")
-            print(f"  acumulado: {acumulado_arg}")
-            print(f"  modelo: {modelo_arg}")
-            
+            print(f"  focus:     {focus_arg}")
+            print(f"  modelo:    {modelo_arg}")
+
         resultado = procesar_y_actualizar_focus(
             archivo_focus=focus_arg,
-            archivo_balance=balance_arg,
+            archivo_balance=None,
             archivo_situacion=situacion_arg,
             archivo_modelo=modelo_arg,
-            archivo_acumulado=acumulado_arg,
+            archivo_acumulado=None,
         )
         print(f"[OK] Archivo generado: {resultado}")
     except FileNotFoundError as e:
         logger.error(f"Error de archivo no encontrado: {e}")
         print(f"\n[ERROR] ERROR: {e}")
-        print("  Por favor, asegúrese de que el archivo solicitado existe y tiene los permisos adecuados.")
         raise
     except pd.errors.EmptyDataError as e:
-        logger.error(f"Error: El archivo está vacío o no contiene datos válidos: {e}")
-        print(f"\n[ERROR] ERROR: El archivo está vacío o tiene un formato incorrecto: {e}")
+        logger.error(f"Archivo vacío o inválido: {e}")
         raise ValueError(f"Archivo vacío o inválido: {e}")
     except Exception as e:
-        logger.error(f"Error inesperado al procesar archivos: {e}")
+        logger.error(f"Error inesperado: {e}")
         logger.error(traceback.format_exc())
         print(f"\n[ERROR] ERROR INESPERADO: {e}")
-        print("  Se ha generado un registro detallado del error en el archivo de log.")
         raise

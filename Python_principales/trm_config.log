@@ -4,3 +4,64 @@
 2026-02-18 08:24:40,224 - trm_config - INFO - TRM actualizada y guardada correctamente
 2026-02-18 08:24:49,467 - root - INFO - Modelo de deuda generado: C:\wamp64\www\cartera_v3.0.0\Python_principales\salidas\MODELO_DEUDA_20260218_082438.xlsx
 2026-02-18 08:24:49,484 - SISTEMA_CARTERA - INFO - [MODELO_DEUDA] [FINALIZADO] archivo_salida: MODELO_DEUDA_20260218_082438.xlsx | timestamp: 08:24:49
+2026-06-04 12:57:17,841 - trm_config - INFO - TRM no es del día actual. Actualizando automáticamente...
+2026-06-04 12:57:19,277 - trm_config - INFO - TRM oficial obtenida: 3572.85
+2026-06-04 12:57:19,291 - trm_config - INFO - TRM actualizada y guardada correctamente
+2026-06-04 18:18:07,479 - __main__ - ERROR - Error inesperado al procesar archivos: 'charmap' codec can't encode character '\u2192' in position 222: character maps to <undefined>
+2026-06-04 18:18:12,915 - __main__ - ERROR - Error inesperado al procesar archivos: 'charmap' codec can't encode character '\u2192' in position 222: character maps to <undefined>
+2026-06-05 10:52:15,627 - trm_config - INFO - TRM no es del día actual. Actualizando automáticamente...
+2026-06-05 10:52:17,469 - trm_config - INFO - TRM oficial obtenida: 3565.32
+2026-06-05 10:52:17,488 - trm_config - INFO - TRM actualizada y guardada correctamente
+2026-06-05 12:37:53,291 - __main__ - ERROR - Error inesperado al procesar archivos: 'charmap' codec can't encode character '\u2192' in position 22: character maps to <undefined>
+2026-06-05 12:38:24,139 - __main__ - ERROR - Error inesperado al procesar archivos: 'charmap' codec can't encode character '\u2192' in position 22: character maps to <undefined>
+2026-06-05 12:38:58,765 - __main__ - ERROR - Error inesperado al procesar archivos: 'charmap' codec can't encode character '\u2192' in position 27: character maps to <undefined>
+2026-06-09 09:08:25,083 - trm_config - INFO - TRM no es del día actual. Actualizando automáticamente...
+2026-06-09 09:08:26,533 - trm_config - INFO - TRM oficial obtenida: 3588.09
+2026-06-09 09:08:26,536 - trm_config - INFO - TRM actualizada y guardada correctamente
+2026-06-09 09:08:27,398 - __main__ - ERROR - Error inesperado al procesar archivos: 'charmap' codec can't encode character '\u2260' in position 35: character maps to <undefined>
+2026-06-09 09:08:39,077 - __main__ - ERROR - Error inesperado al procesar archivos: 'charmap' codec can't encode character '\u2260' in position 35: character maps to <undefined>
+2026-06-11 13:48:40,660 - trm_config - INFO - TRM no es del día actual. Actualizando automáticamente...
+2026-06-11 13:48:47,080 - trm_config - INFO - TRM oficial obtenida: 3567.11
+2026-06-11 13:48:47,087 - trm_config - INFO - TRM actualizada y guardada correctamente
+2026-06-12 08:35:52,777 - trm_config - INFO - TRM no es del día actual. Actualizando automáticamente...
+2026-06-12 08:35:54,453 - trm_config - INFO - TRM oficial obtenida: 3513.54
+2026-06-12 08:35:54,465 - trm_config - INFO - TRM actualizada y guardada correctamente
+2026-06-16 11:29:59,233 - trm_config - INFO - TRM no es del día actual. Actualizando automáticamente...
+2026-06-16 11:30:00,774 - trm_config - INFO - TRM oficial obtenida: 3475.72
+2026-06-16 11:30:00,787 - trm_config - INFO - TRM actualizada y guardada correctamente
+2026-06-16 11:30:00,896 - __main__ - ERROR - Error inesperado al procesar archivos: 'charmap' codec can't encode character '\u2192' in position 607: character maps to <undefined>
+2026-06-16 12:37:52,082 - __main__ - ERROR - Error inesperado al procesar archivos: 'charmap' codec can't encode character '\u2192' in position 32: character maps to <undefined>
+2026-06-16 12:38:24,994 - __main__ - ERROR - Error inesperado al procesar archivos: 'charmap' codec can't encode character '\u2192' in position 32: character maps to <undefined>
+2026-06-16 12:42:46,534 - __main__ - ERROR - Error inesperado al procesar archivos: 'charmap' codec can't encode character '\u2192' in position 20: character maps to <undefined>
+2026-06-16 12:43:38,659 - __main__ - ERROR - Error inesperado al procesar archivos: 'charmap' codec can't encode character '\u2192' in position 24: character maps to <undefined>
+2026-06-16 12:46:01,313 - __main__ - ERROR - Error inesperado al procesar archivos: 'charmap' codec can't encode character '\u2192' in position 24: character maps to <undefined>
+2026-06-16 17:38:12,385 - __main__ - ERROR - Error inesperado al procesar archivos: name 'get_column_letter' is not defined
+2026-06-16 17:38:12,388 - __main__ - ERROR - Traceback (most recent call last):
+  File "C:\wamp64\www\Cartera_Colombia\Python_principales\procesar_y_actualizar_focus.py", line 2487, in <module>
+    resultado = procesar_y_actualizar_focus(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\wamp64\www\Cartera_Colombia\Python_principales\procesar_y_actualizar_focus.py", line 2220, in procesar_y_actualizar_focus
+    actualizar_hoja_focus(
+  File "C:\wamp64\www\Cartera_Colombia\Python_principales\procesar_y_actualizar_focus.py", line 2334, in actualizar_hoja_focus
+    print(f"\n  Shift bloque {nombre} (cols {get_column_letter(col_ini)}-{get_column_letter(col_fin)})...")
+                                             ^^^^^^^^^^^^^^^^^
+NameError: name 'get_column_letter' is not defined
+
+2026-06-17 07:54:43,969 - trm_config - INFO - TRM no es del día actual. Actualizando automáticamente...
+2026-06-17 07:54:45,677 - trm_config - INFO - TRM oficial obtenida: 3427.07
+2026-06-17 07:54:45,682 - trm_config - INFO - TRM actualizada y guardada correctamente
+2026-06-18 07:38:51,327 - trm_config - INFO - TRM no es del día actual. Actualizando automáticamente...
+2026-06-18 07:38:52,774 - trm_config - INFO - TRM oficial obtenida: 3439.91
+2026-06-18 07:38:52,781 - trm_config - INFO - TRM actualizada y guardada correctamente
+2026-06-22 10:22:24,580 - trm_config - INFO - TRM no es del día actual. Actualizando automáticamente...
+2026-06-22 10:22:25,597 - trm_config - INFO - TRM oficial obtenida: 3459.53
+2026-06-22 10:22:25,597 - trm_config - INFO - TRM actualizada y guardada correctamente
+2026-06-23 08:08:29,838 - trm_config - INFO - TRM no es del día actual. Actualizando automáticamente...
+2026-06-23 08:08:31,191 - trm_config - INFO - TRM oficial obtenida: 3406.14
+2026-06-23 08:08:31,191 - trm_config - INFO - TRM actualizada y guardada correctamente
+2026-06-24 07:53:34,464 - trm_config - INFO - TRM no es del día actual. Actualizando automáticamente...
+2026-06-24 07:53:35,983 - trm_config - INFO - TRM oficial obtenida: 3425.95
+2026-06-24 07:53:35,997 - trm_config - INFO - TRM actualizada y guardada correctamente
+2026-06-26 11:56:55,162 - trm_config - INFO - TRM no es del día actual. Actualizando automáticamente...
+2026-06-26 11:56:57,016 - trm_config - INFO - TRM oficial obtenida: 3433.71
+2026-06-26 11:56:57,028 - trm_config - INFO - TRM actualizada y guardada correctamente
