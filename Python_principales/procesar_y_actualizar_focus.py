@@ -1482,7 +1482,19 @@ def procesar_y_actualizar_focus(
     print(f"Mes siguiente: {mes_siguiente}")
  
     insertar_dato_entrada(ws_modelo, 'B5', mes_siguiente, f"Mes siguiente ({mes_siguiente})", forzar_sobrescribir=True)
- 
+
+    # --- NUEVO: renombrar la hoja del modelo con el mes correcto ---
+    try:
+        titulo_actual = ws_modelo.title
+        anio = titulo_actual[-2:] if titulo_actual[-2:].isdigit() else "26"
+        nuevo_titulo = f"MODELO DEUDA {str(mes_siguiente).upper()} {anio}"
+        if ws_modelo.title != nuevo_titulo:
+            ws_modelo.title = nuevo_titulo
+            print(f"  [OK] Hoja renombrada a: {ws_modelo.title}")
+    except Exception as e:
+        print(f"  [WARN] No se pudo renombrar la hoja: {e}")
+    # --- FIN NUEVO ---
+    
     mes_anterior_nombre = ""
     if mes_siguiente in MESES:
         idx_sig = MESES.index(mes_siguiente)

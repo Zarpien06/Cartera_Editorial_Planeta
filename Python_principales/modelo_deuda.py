@@ -472,6 +472,15 @@ def crear_hoja_vencimientos(df_pesos_final: pd.DataFrame,
 
     df_all = pd.concat([df_pesos_final, df_divisas_final], ignore_index=True)
 
+    # FIX: excluir PL11, PL18 y PL57 SOLO de la hoja VENCIMIENTO
+    LINEAS_EXCLUIR_VENCIMIENTO = {'PL11', 'PL18', 'PL57'}
+    if 'LINEA DE NEGOCIO' in df_all.columns:
+        antes_excl = len(df_all)
+        df_all = df_all[
+            ~df_all['LINEA DE NEGOCIO'].astype(str).str.strip().str.upper().isin(LINEAS_EXCLUIR_VENCIMIENTO)
+        ].copy()
+        print(f"  [OK] Hoja VENCIMIENTO: excluidas PL11/PL18/PL57 -> {antes_excl - len(df_all)} registros removidos")
+
     if 'LINEA DE NEGOCIO' in df_all.columns:
         df_all['NEGOCIO'] = df_all['LINEA DE NEGOCIO'].apply(
             lambda k: TABLA_NEGOCIO_CANAL.get(
@@ -479,7 +488,7 @@ def crear_hoja_vencimientos(df_pesos_final: pd.DataFrame,
             )['NEGOCIO']
         )
         df_all['CANAL'] = df_all['LINEA DE NEGOCIO'].apply(
-            lambda k: str(k).strip().upper()[2:] if isinstance(k, str) and len(str(k)) > 2 else ''
+            lambda k: str(k).strip().upper() if isinstance(k, str) and len(str(k)) > 2 else ''
         )
         df_all['MONEDA'] = df_all['LINEA DE NEGOCIO'].apply(
             lambda k: _moneda_por_linea(str(k).strip().upper())
@@ -591,7 +600,7 @@ def crear_hoja_vencimientos(df_pesos_final: pd.DataFrame,
 def crear_hoja_usd_euro_vencimientos(df_pesos_final: pd.DataFrame,
                                      df_divisas_cop: pd.DataFrame) -> pd.DataFrame:
     """
-    Crea vencimientos SOLO con divisas (USD y EUR).
+    Crea vencimientos SOLO con divisas (USD y EUR), YA CONVERTIDAS A COP.
     FIX-OBS-2: 'Saldo Vencido' eliminado de columnas sumables y del rename.
     FIX-OBS-3: Los buckets individuales permanecen para conciliación.
     """
@@ -618,7 +627,7 @@ def crear_hoja_usd_euro_vencimientos(df_pesos_final: pd.DataFrame,
             )['NEGOCIO']
         )
         df_all['CANAL'] = df_all['LINEA DE NEGOCIO'].apply(
-            lambda k: str(k).strip().upper()[2:] if isinstance(k, str) and len(str(k)) > 2 else ''
+            lambda k: str(k).strip().upper() if isinstance(k, str) and len(str(k)) > 2 else ''
         )
         df_all['MONEDA'] = df_all['LINEA DE NEGOCIO'].apply(
             lambda k: _moneda_por_linea(str(k).strip().upper())
@@ -686,6 +695,126 @@ def crear_hoja_usd_euro_vencimientos(df_pesos_final: pd.DataFrame,
     df_sum = df_sum.groupby(cols_reagrupar, as_index=False)[cols_sumar].sum()
 
     # FIX-OBS-3: totales incluyen todos los buckets
+    totales_moneda = (
+        df_sum
+        .groupby('MONEDA', as_index=False)[[
+            'SALDO TOTAL',
+            'Saldo No vencido',
+            'Vencido 30', 'Vencido 60', 'Vencido 90',
+            'Vencido 180', 'Vencido 360', 'Vencido + 360',
+            'DEUDA INCOBRABLE'
+        ]]
+        .sum()
+    )
+
+    totales_moneda['Pais']       = 'COLOMBIA'
+    totales_moneda['NEGOCIO']    = 'TOTAL'
+    totales_moneda['CANAL']      = 'TOTAL'
+    totales_moneda['COBRO/PAGO'] = ''
+    totales_moneda['CLIENTE']    = 'TOTAL GENERAL POR MONEDA'
+    totales_moneda = totales_moneda[df_sum.columns]
+
+    df_final = pd.concat([df_sum, totales_moneda], ignore_index=True)
+    return df_final
+
+
+# ============================================================
+# NUEVA HOJA: USD_EURO_VENCIMIENTOS EN MONEDA ORIGINAL
+# (misma lógica que crear_hoja_usd_euro_vencimientos, pero
+#  SIN multiplicar por la TRM -- usa df_divisas_final tal cual)
+# ============================================================
+def crear_hoja_usd_euro_vencimientos_moneda_original(df_divisas_final: pd.DataFrame) -> pd.DataFrame:
+    """
+    Igual a crear_hoja_usd_euro_vencimientos, pero recibe df_divisas_final
+    (moneda original USD/EUR, SIN convertir a COP) en vez de df_divisas_cop.
+    """
+
+    columnas_sumables = [
+        'SALDO',
+        'SALDO NO VENCIDO',
+        'VENCIDO 30',
+        'VENCIDO 60',
+        'VENCIDO 90',
+        'VENCIDO 180',
+        'VENCIDO 360',
+        'VENCIDO + 360',
+        'DEUDA INCOBRABLE'
+    ]
+
+    df_all = df_divisas_final.copy()
+
+    if 'LINEA DE NEGOCIO' in df_all.columns:
+        df_all['NEGOCIO'] = df_all['LINEA DE NEGOCIO'].apply(
+            lambda k: TABLA_NEGOCIO_CANAL.get(
+                str(k).strip().upper(), {'NEGOCIO': 'OTROS', 'CANAL': 'OTROS'}
+            )['NEGOCIO']
+        )
+        df_all['CANAL'] = df_all['LINEA DE NEGOCIO'].apply(
+            lambda k: str(k).strip().upper() if isinstance(k, str) and len(str(k)) > 2 else ''
+        )
+        df_all['MONEDA'] = df_all['LINEA DE NEGOCIO'].apply(
+            lambda k: _moneda_por_linea(str(k).strip().upper())
+        )
+
+    df_all['MONEDA']  = df_all.get('MONEDA', 'PESOS COL').astype(str).str.strip()
+    df_all['CLIENTE'] = df_all.get('DENOMINACION COMERCIAL', '').astype(str).str.strip()
+
+    df_all['NEGOCIO'] = df_all['NEGOCIO'].astype(str).str.strip()
+    df_all['CANAL']   = df_all['CANAL'].astype(str).str.strip()
+    df_all['MONEDA']  = df_all['MONEDA'].astype(str).str.strip()
+    df_all['CLIENTE'] = df_all['CLIENTE'].astype(str).str.strip()
+
+    grp_cols = ['NEGOCIO', 'CANAL', 'MONEDA', 'CLIENTE']
+    for c in grp_cols:
+        if c not in df_all.columns:
+            df_all[c] = ''
+
+    df_sum = (
+        df_all
+        .groupby(grp_cols, as_index=False)[columnas_sumables]
+        .sum()
+    )
+
+    df_sum = df_sum.loc[:, ~df_sum.columns.duplicated(keep='first')]
+
+    df_sum['MONEDA'] = (
+        df_sum['MONEDA']
+        .astype(str).str.strip().str.upper()
+        .str.replace('DÓLAR', 'DOLAR', regex=False)
+        .str.replace('DOLLAR', 'DOLAR', regex=False)
+    )
+
+    df_sum.insert(0, 'Pais',       'COLOMBIA')
+    df_sum.insert(3, 'COBRO/PAGO', 'CLIENTE')
+
+    df_sum = df_sum.rename(columns={
+        'SALDO':            'SALDO TOTAL',
+        'SALDO NO VENCIDO': 'Saldo No vencido',
+        'VENCIDO 30':       'Vencido 30',
+        'VENCIDO 60':       'Vencido 60',
+        'VENCIDO 90':       'Vencido 90',
+        'VENCIDO 180':      'Vencido 180',
+        'VENCIDO 360':      'Vencido 360',
+        'VENCIDO + 360':    'Vencido + 360',
+        'DEUDA INCOBRABLE': 'DEUDA INCOBRABLE'
+    })
+
+    df_sum['MONEDA'] = (
+        df_sum['MONEDA']
+        .astype(str).str.strip().str.upper()
+        .str.replace('DÓLAR', 'DOLAR', regex=False)
+        .str.replace('DOLLAR', 'DOLAR', regex=False)
+    )
+
+    cols_reagrupar = ['Pais', 'NEGOCIO', 'CANAL', 'COBRO/PAGO', 'MONEDA', 'CLIENTE']
+    cols_sumar = [
+        'SALDO TOTAL', 'Saldo No vencido',
+        'Vencido 30', 'Vencido 60', 'Vencido 90',
+        'Vencido 180', 'Vencido 360', 'Vencido + 360', 'DEUDA INCOBRABLE'
+    ]
+
+    df_sum = df_sum.groupby(cols_reagrupar, as_index=False)[cols_sumar].sum()
+
     totales_moneda = (
         df_sum
         .groupby('MONEDA', as_index=False)[[
@@ -832,6 +961,7 @@ def crear_modelo_deuda(archivo_provision: str,
         'NCMOMO': 'TIPO ANTICIPO',
         'NCCDR3': 'NUMERO ANTICIPO',
         'NCIMAN': 'VALOR ANTICIPO',
+        'ANTICIPO': 'VALOR ANTICIPO', 
         'NCFEGR': 'FECHA',
     }
     df_anticipos = df_anticipos_raw.rename(
@@ -1172,7 +1302,12 @@ def crear_modelo_deuda(archivo_provision: str,
     print(f"  [OK] {len(df_usd_euro_vencimientos):,} filas USD_EURO_VENCIMIENTOS")
     print(f"  [OK] {len(df_vencimientos):,} filas en hoja VENCIMIENTO")
 
-    for dfX in (df_pesos_final, df_divisas_final, df_divisas_cop, df_vencimientos, df_usd_euro_vencimientos):
+    # NUEVA HOJA: misma info pero en moneda original (sin convertir por TRM)
+    df_usd_euro_vencimientos_original = crear_hoja_usd_euro_vencimientos_moneda_original(df_divisas_final)
+    print(f"  [OK] {len(df_usd_euro_vencimientos_original):,} filas USD_EURO_VENCIMIENTOS_MONEDA_ORIGINAL")
+
+    for dfX in (df_pesos_final, df_divisas_final, df_divisas_cop, df_vencimientos,
+                df_usd_euro_vencimientos, df_usd_euro_vencimientos_original):
         if 'FECHA' in dfX.columns:
             dfX['FECHA'] = pd.to_datetime(dfX['FECHA'], errors='coerce').dt.date
         if 'FECHA VTO' in dfX.columns:
@@ -1341,11 +1476,22 @@ def crear_modelo_deuda(archivo_provision: str,
             print("  [OK] Hoja VENCIMIENTO escrita")
 
         # ===================================
-        # HOJA USD_EURO_VENCIMIENTOS
+        # HOJA USD_EURO_VENCIMIENTOS (convertida a COP)
         # ===================================
         if not df_usd_euro_vencimientos.empty:
             _escribir_hoja(df_usd_euro_vencimientos, 'USD_EURO_VENCIMIENTOS', 'TOTAL GENERAL', 'CLIENTE')
             print("  [OK] Hoja USD_EURO_VENCIMIENTOS escrita")
+
+        # ===================================
+        # HOJA NUEVA: USD_EURO_VENCIMIENTOS_MONEDA_ORIGINAL (sin convertir por TRM)
+        # ===================================
+        if not df_usd_euro_vencimientos_original.empty:
+            _escribir_hoja(
+                df_usd_euro_vencimientos_original,
+                'USD_EURO_VENC_ORIGINAL',  
+                'TOTAL GENERAL', 'CLIENTE'
+            )
+            print("  [OK] Hoja USD_EURO_VENC_ORIGINAL escrita")
 
         # ===================================
         # HOJA TASAS TRM
